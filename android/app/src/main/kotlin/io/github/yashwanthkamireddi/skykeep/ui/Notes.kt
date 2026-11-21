@@ -1157,6 +1157,8 @@ private fun NoteEditor(
   // 正文连同光标：从富文本点进编辑时，光标落在点的那个字上。
   var text by remember { mutableStateOf(TextFieldValue("")) }
   var saved by remember { mutableStateOf("") }
+  // 新笔记刚在 iCloud 建立的那一刻（有了 guid，文档还没读回），别把界面拆了——键盘会掉。
+  var fresh by remember { mutableStateOf(false) }
   var moving by remember { mutableStateOf(false) }
   var menu by remember { mutableStateOf(false) }
   // 系统文件夹按中文显示（引擎给的是账号语言的原文），自建的照原样。
@@ -1166,7 +1168,7 @@ private fun NoteEditor(
   fun load() = scope.launch {
     val g = guid ?: return@launch
     runCatching { withContext(Dispatchers.IO) { engine.note(g) } }
-      .onSuccess { doc = it; if (!editing) { text = TextFieldValue(it.text); saved = it.text } }
+      .onSuccess { doc = it; fresh = false; if (!editing) { text = TextFieldValue(it.text); saved = it.text } }
       .onFailure { onProblem(reason(it)) }
   }
   fun save(then: () -> Unit = {}) = scope.launch {
@@ -1175,7 +1177,7 @@ private fun NoteEditor(
       runCatching {
         withContext(Dispatchers.IO) {
           // A new note is made with its first text; one left empty is never made.
-          if (g == null) { if (text.text.isNotBlank()) guid = engine.noteCreate(folderGuid, text.text) } else engine.noteSave(g, text.text)
+          if (g == null) { if (text.text.isNotBlank()) { guid = engine.noteCreate(folderGuid, text.text); fresh = true } } else engine.noteSave(g, text.text)
         }
       }.onSuccess { saved = text.text; syncNotes(context) }.onFailure { onProblem(reason(it)) }
     }
@@ -1193,8 +1195,10 @@ private fun NoteEditor(
   }
   BackHandler { save { onBack() } }
 
-  // A new note has no document yet: it is an empty one being typed.
-  val d = doc ?: NDoc(guid ?: "", folderGuid, "", text.text, emptyList(), pinned = false, locked = false, editable = true, modifiedAt = null).takeIf { guid == null } ?: return
+  // A new note has no document yet: it is an empty one being typed — and, right after it is
+  // first saved, one whose real document is still on its way back, so the editor stays put.
+  val d = doc ?: NDoc(guid ?: "", folderGuid, "", text.text, emptyList(), pinned = false, locked = false, editable = true, modifiedAt = null)
+    .takeIf { guid == null || fresh } ?: return
   val trashed = d.folderGuid == TRASH
 
   IosBar {
