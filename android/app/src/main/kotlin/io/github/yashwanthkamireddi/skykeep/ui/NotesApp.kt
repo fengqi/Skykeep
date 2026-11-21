@@ -115,13 +115,18 @@ fun NotesScreens(
   onSignedOut: () -> Unit,
 ) {
   var place by rememberSaveable { mutableStateOf(NotesPlace.Notes) }
+  // 快捷方式的标记在这层转成待办：不管当前停在备忘录还是设置，都能消费。
+  var newNotePending by remember { mutableStateOf(false) }
+  LaunchedEffect(newNoteLaunch) {
+    if (newNoteLaunch) { place = NotesPlace.Notes; newNotePending = true }
+  }
   when (place) {
     NotesPlace.Notes -> AppTheme(Palette.App.Notes) {
       NotesPage(
         engine,
         onOpenSettings = { place = NotesPlace.Settings },
-        newNoteLaunch = newNoteLaunch,
-        onNewNoteConsumed = onNewNoteConsumed,
+        newNoteLaunch = newNotePending,
+        onNewNoteConsumed = { newNotePending = false; onNewNoteConsumed() },
       )
     }
     NotesPlace.Settings -> NotesSettingsScreen(engine, onBack = { place = NotesPlace.Notes }, onSignedOut = onSignedOut)
