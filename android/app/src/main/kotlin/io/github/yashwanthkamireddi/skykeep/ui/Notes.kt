@@ -16,6 +16,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenu
@@ -87,7 +88,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -1151,7 +1154,8 @@ private fun NoteEditor(
   var guid by remember { mutableStateOf(opened) }
   var doc by remember { mutableStateOf<NDoc?>(null) }
   var editing by remember { mutableStateOf(opened == null) }
-  var text by remember { mutableStateOf("") }
+  // 正文连同光标：从富文本点进编辑时，光标落在点的那个字上。
+  var text by remember { mutableStateOf(TextFieldValue("")) }
   var saved by remember { mutableStateOf("") }
   var moving by remember { mutableStateOf(false) }
   var menu by remember { mutableStateOf(false) }
@@ -1162,18 +1166,18 @@ private fun NoteEditor(
   fun load() = scope.launch {
     val g = guid ?: return@launch
     runCatching { withContext(Dispatchers.IO) { engine.note(g) } }
-      .onSuccess { doc = it; if (!editing) { text = it.text; saved = it.text } }
+      .onSuccess { doc = it; if (!editing) { text = TextFieldValue(it.text); saved = it.text } }
       .onFailure { onProblem(reason(it)) }
   }
   fun save(then: () -> Unit = {}) = scope.launch {
-    if (text != saved) {
+    if (text.text != saved) {
       val g = guid
       runCatching {
         withContext(Dispatchers.IO) {
           // A new note is made with its first text; one left empty is never made.
-          if (g == null) { if (text.isNotBlank()) guid = engine.noteCreate(folderGuid, text) } else engine.noteSave(g, text)
+          if (g == null) { if (text.text.isNotBlank()) guid = engine.noteCreate(folderGuid, text.text) } else engine.noteSave(g, text.text)
         }
-      }.onSuccess { saved = text; syncNotes(context) }.onFailure { onProblem(reason(it)) }
+      }.onSuccess { saved = text.text; syncNotes(context) }.onFailure { onProblem(reason(it)) }
     }
     then()
   }
@@ -1185,12 +1189,12 @@ private fun NoteEditor(
   LaunchedEffect(guid) { load() }
   // Typing is saved a moment after it stops, as Notes saves: never lost, never a save per key.
   LaunchedEffect(text, editing) {
-    if (editing && text != saved) { delay(800); save() }
+    if (editing && text.text != saved) { delay(800); save() }
   }
   BackHandler { save { onBack() } }
 
   // A new note has no document yet: it is an empty one being typed.
-  val d = doc ?: NDoc(guid ?: "", folderGuid, "", text, emptyList(), pinned = false, locked = false, editable = true, modifiedAt = null).takeIf { guid == null } ?: return
+  val d = doc ?: NDoc(guid ?: "", folderGuid, "", text.text, emptyList(), pinned = false, locked = false, editable = true, modifiedAt = null).takeIf { guid == null } ?: return
   val trashed = d.folderGuid == TRASH
 
   IosBar {
@@ -1242,7 +1246,7 @@ private fun NoteEditor(
         val focus = remember { FocusRequester() }
         LaunchedEffect(Unit) { focus.requestFocus() }
         BasicTextField(
-          text, { text = it },
+          value = text, onValueChange = { text = it },
           // An attachment shows as 📎, not the font's dotted "OBJ" box (discussion #199).
           visualTransformation = AttachmentMarks,
           textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface, lineHeight = 24.sp),
@@ -1253,7 +1257,14 @@ private fun NoteEditor(
       else -> RichNote(
         d,
         engine,
-        Modifier.fillMaxSize().clickable(enabled = d.editable && !trashed) { text = d.text; saved = d.text; editing = true },
+        // 点行与行之间的空隙时兜底：光标落在文末。
+        Modifier.fillMaxSize().clickable(enabled = d.editable && !trashed) {
+          text = TextFieldValue(d.text, TextRange(d.text.length)); saved = d.text; editing = true
+        },
+        // 点正文哪一行，就落到哪个字上进入修改。
+        onPlace = { off ->
+          text = TextFieldValue(d.text, TextRange(off)); saved = d.text; editing = true
+        },
       ) { at, checked ->
         val g = guid ?: return@RichNote
         act({ engine.noteCheck(g, at, checked) }) { load() }
@@ -1335,15 +1346,15 @@ private fun lay(d: NDoc): List<NoteLine> {
  * lines composed only as they scroll into view.
  */
 @Composable
-private fun RichNote(d: NDoc, engine: AccountInterface, modifier: Modifier, onCheck: (UInt, Boolean) -> Unit) {
+private fun RichNote(d: NDoc, engine: AccountInterface, modifier: Modifier, onPlace: (Int) -> Unit, onCheck: (UInt, Boolean) -> Unit) {
   val lines = remember(d) { lay(d) }
   LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-    items(lines.size) { i -> NoteLineView(lines[i], engine, onCheck) }
+    items(lines.size) { i -> NoteLineView(lines[i], engine, onPlace, onCheck) }
   }
 }
 
 @Composable
-private fun NoteLineView(l: NoteLine, engine: AccountInterface, onCheck: (UInt, Boolean) -> Unit) {
+private fun NoteLineView(l: NoteLine, engine: AccountInterface, onPlace: (Int) -> Unit, onCheck: (UInt, Boolean) -> Unit) {
   val palette = iosPalette()
   val para = l.para
   // The attachments on this line, in order: each U+FFFC is one, named by the span over it.
@@ -1406,7 +1417,18 @@ private fun NoteLineView(l: NoteLine, engine: AccountInterface, onCheck: (UInt, 
     if (para?.quote == true) Box(Modifier.padding(end = 10.dp).size(3.dp, 22.dp).background(palette.separator))
     // A line that is only its attachments shows them alone, without an empty line of text.
     if (attachments.isEmpty() || l.text.any { it != '\uFFFC' && !it.isWhitespace() }) {
-      Text(styled, style = style.copy(lineHeight = (style.fontSize.value * 1.35f).sp))
+      // 点行里的哪个字，就把那个位置交给编辑器：光标落在原地。
+      var layout by remember(l) { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+      Text(
+        styled,
+        style = style.copy(lineHeight = (style.fontSize.value * 1.35f).sp),
+        onTextLayout = { layout = it },
+        modifier = Modifier.fillMaxWidth().pointerInput(l.start, l.text) {
+          detectTapGestures { pos ->
+            layout?.let { onPlace(l.start + it.getOffsetForPosition(pos).coerceAtMost(l.text.length)) }
+          }
+        },
+      )
     }
   }
   for (id in attachments) NoteAttachmentView(id, engine)
