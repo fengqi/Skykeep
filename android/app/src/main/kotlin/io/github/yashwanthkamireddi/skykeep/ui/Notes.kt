@@ -13,6 +13,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenu
@@ -33,6 +34,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
@@ -45,7 +50,9 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -61,6 +68,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -189,6 +197,8 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
   var newFolder by remember { mutableStateOf(false) }
   var renaming by remember { mutableStateOf<NFolder?>(null) }
   var dropping by remember { mutableStateOf<NFolder?>(null) }
+  // 文件夹页的编辑（排序）模式：菜单“编辑”进入，“完成”退出。
+  var editingFolders by rememberSaveable { mutableStateOf(false) }
 
   fun reason(t: Throwable) = (t as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "无法读取备忘录。"
 
@@ -234,7 +244,8 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
   // Back goes up one level: an open folder to the folders, search results to where they began;
   // an open note handles its own back (it saves).
   BackHandler(enabled = searching) { cancelSearch() }
-  BackHandler(enabled = !searching && place is NPlace.Folder) { place = NPlace.Folders; query = "" }
+  BackHandler(enabled = editingFolders) { editingFolders = false }
+  BackHandler(enabled = !searching && !editingFolders && place is NPlace.Folder) { place = NPlace.Folders; query = "" }
 
   Column(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding()) {
     problem?.let { Text(it, color = palette.delete, modifier = Modifier.padding(20.dp, 12.dp)) }
@@ -278,6 +289,8 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
           NPlace.Folders -> FolderScreen(
             folders, notes, query, palette,
             searching = searching,
+            editing = editingFolders,
+            onEditing = { editingFolders = it },
             onSearchStart = { searching = true },
             onCancelSearch = { cancelSearch() },
             onQuery = { query = it },
@@ -332,7 +345,63 @@ internal fun IosBar(content: @Composable RowScope.() -> Unit) {
   )
 }
 
+/** Apple 系统的“备忘录”文件夹：位置固定，如 iOS 把“所有 iCloud”与“备忘录”钉在顶部。 */
+private const val DEFAULT_FOLDER = "DefaultFolder-CloudKit"
+
+/** 自建文件夹的顺序（编辑模式拖出来的），按 guid 存在本机，如 iOS 存它自己的顺序。 */
+private fun savedFolderOrder(context: android.content.Context): List<String> =
+  context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+    .getString("folderOrder", null)?.split(',')?.filter { it.isNotBlank() } ?: emptyList()
+
+private fun saveFolderOrder(context: android.content.Context, order: List<String>) {
+  context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+    .edit().putString("folderOrder", order.joinToString(",")).apply()
+}
+
+/** 一个文件夹在文件夹页的一行。 */
+private data class FolderRow(val title: String, val count: Int, val icon: Int, val place: NPlace.Folder, val fixed: Boolean = false)
+
+/** 文件夹页的行序：所有 iCloud 固定顶，“备忘录”其次，自建的按本机保存的顺序，最近删除固定底。 */
+private fun folderRows(folders: List<NFolder>, order: List<String>): List<FolderRow> {
+  val all = folders.filter { !it.trash }.sumOf { it.count.toInt() }
+  val system = folders.filter { it.guid == DEFAULT_FOLDER && !it.trash }
+  val user = folders.filter { it.guid != DEFAULT_FOLDER && !it.trash }
+  val ordered = order.mapNotNull { g -> user.firstOrNull { it.guid == g } } + user.filterNot { f -> order.contains(f.guid) }
+  return buildList {
+    add(FolderRow("所有 iCloud", all, R.drawable.ic_folder, NPlace.Folder(null, "所有 iCloud"), fixed = true))
+    system.forEach { add(FolderRow(it.title, it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, it.title), fixed = true)) }
+    ordered.forEach { add(FolderRow(it.title, it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, it.title))) }
+    folders.firstOrNull { it.trash }?.let { add(FolderRow("最近删除", it.count.toInt(), R.drawable.ic_trash, NPlace.Folder(it.guid, "最近删除"), fixed = true)) }
+  }
+}
+
+/** 文件夹页一行（普通或编辑模式共用）。 */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun FolderRowView(r: FolderRow, palette: IosPalette, dimmed: Boolean = false, onClick: (() -> Unit)? = { }) {
+  Row(
+    Modifier.fillMaxWidth()
+      .then(if (onClick != null) Modifier.clickable(enabled = !dimmed) { onClick() } else Modifier)
+      .padding(horizontal = 14.dp, vertical = 12.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Icon(painterResource(r.icon), contentDescription = null, tint = palette.accent, modifier = Modifier.size(22.dp))
+    Spacer(Modifier.width(14.dp))
+    Text(r.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Text("${r.count}", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
+    Spacer(Modifier.width(6.dp))
+    Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(16.dp))
+  }
+}
+
+/** 编辑模式下的拖拽排序：按住一行上下拖，越过邻行就交换。 */
+private fun <T> MutableList<T>.swapAt(a: Int, b: Int) {
+  if (a !in indices || b !in indices || a == b) return
+  val t = this[a]; this[a] = this[b]; this[b] = t
+}
+
 /** The folders, as iOS lists them: All iCloud, each folder, Recently Deleted, one white card. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun FolderScreen(
   folders: List<NFolder>,
@@ -340,6 +409,8 @@ private fun FolderScreen(
   query: String,
   palette: IosPalette,
   searching: Boolean,
+  editing: Boolean,
+  onEditing: (Boolean) -> Unit,
   onSearchStart: () -> Unit,
   onCancelSearch: () -> Unit,
   onQuery: (String) -> Unit,
@@ -348,6 +419,7 @@ private fun FolderScreen(
   onNewFolder: () -> Unit,
   onSettings: () -> Unit,
 ) {
+  val context = LocalContext.current
   if (searching) {
     // 搜索模式：标题栏消失，搜索框上移到顶，右侧是取消；输入后才出现结果。
     SearchRow(query, onQuery, palette, onCancelSearch, Modifier.padding(top = 4.dp))
@@ -361,42 +433,93 @@ private fun FolderScreen(
     return
   }
   var menu by remember { mutableStateOf(false) }
+  val listState = rememberLazyListState()
+  // 大标题滚出屏幕后，顶栏中间淡入小标题，如 iOS 的收起。
+  val collapsed = listState.firstVisibleItemIndex > 0
+  if (editing) {
+    // 编辑模式：自建文件夹按住拖动排序；固定的（所有 iCloud、备忘录、最近删除）不在列。
+    val user = folders.filter { it.guid != DEFAULT_FOLDER && !it.trash }
+    val saved = savedFolderOrder(context)
+    var order by remember { mutableStateOf(saved.mapNotNull { g -> user.firstOrNull { it.guid == g } } + user.filterNot { saved.contains(it.guid) }) }
+    var dragFrom by remember { mutableStateOf<Int?>(null) }
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
+    val rowHeight = with(density) { 56.dp.toPx() }
+    IosBar {
+      Spacer(Modifier.weight(1f))
+      TextButton(onClick = { saveFolderOrder(context, order.map { it.guid }); onEditing(false) }) { Text("完成", color = palette.accent) }
+    }
+    Column(Modifier.padding(horizontal = 20.dp)) {
+      Text("排序文件夹", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold))
+      Text("按住自建的文件夹上下拖动。“所有 iCloud”“备忘录”和“最近删除”的位置固定。", style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
+    }
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+      order.forEachIndexed { i, f ->
+        val dragging = dragFrom == i
+        Row(
+          Modifier.fillMaxWidth().height(56.dp)
+            .zIndex(if (dragging) 1f else 0f)
+            .graphicsLayer { translationY = if (dragging) dragOffset else 0f }
+            .background(palette.card, if (dragging) MaterialTheme.shapes.large else androidx.compose.ui.graphics.RectangleShape)
+            .pointerInput(user) {
+              detectDragGesturesAfterLongPress(
+                onDragStart = { dragFrom = i; dragOffset = 0f },
+                onDrag = { change, drag ->
+                  change.consume()
+                  dragOffset += drag.y
+                  while (kotlin.math.abs(dragOffset) > rowHeight) {
+                    val dir = if (dragOffset > 0) 1 else -1
+                    val target = (i + dir).coerceIn(0, order.lastIndex)
+                    if (target != i) {
+                      order = order.toMutableList().also { it.swapAt(i, target) }
+                      dragOffset -= dir * rowHeight
+                      return@detectDragGesturesAfterLongPress
+                    } else { dragOffset = 0f; break }
+                  }
+                },
+                onDragEnd = { saveFolderOrder(context, order.map { it.guid }); dragFrom = null },
+                onDragCancel = { dragFrom = null },
+              )
+            }.padding(horizontal = 14.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(painterResource(R.drawable.ic_folder), contentDescription = null, tint = palette.accent, modifier = Modifier.size(22.dp))
+          Spacer(Modifier.width(14.dp))
+          Text(f.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+          Text("${f.count}", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
+        }
+      }
+    }
+    return
+  }
   IosBar {
-    Spacer(Modifier.weight(1f))
+    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+      Text("文件夹", style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
+        modifier = Modifier.graphicsLayer { alpha = if (collapsed) 1f else 0f })
+    }
     Box {
       IconButton(onClick = { menu = true }) {
         Icon(painterResource(R.drawable.ic_more), contentDescription = "更多", tint = palette.accent)
       }
       DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
+        DropdownMenuItem(text = { Text("编辑") }, onClick = { menu = false; onEditing(true) })
         DropdownMenuItem(text = { Text("设置") }, onClick = { menu = false; onSettings() })
       }
     }
   }
-  Column(Modifier.padding(horizontal = 20.dp)) {
-    Text("文件夹", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold))
-    IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp), onActivated = onSearchStart)
-  }
-  val all = folders.filter { !it.trash }.sumOf { it.count.toInt() }
-  data class Row(val title: String, val count: Int, val icon: Int, val place: NPlace.Folder)
-  val rows = buildList {
-    add(Row("所有 iCloud", all, R.drawable.ic_folder, NPlace.Folder(null, "所有 iCloud")))
-    // Apple's own "Notes" folder is the one with no folder: notes not filed anywhere.
-    folders.filter { !it.trash }.forEach { add(Row(it.title, it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, it.title))) }
-    folders.firstOrNull { it.trash }?.let { add(Row("最近删除", it.count.toInt(), R.drawable.ic_trash, NPlace.Folder(it.guid, "最近删除"))) }
-  }
-  LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp)) {
-    groupItems(rows, key = { it.title }, inset = 54) { r ->
-      Row(
-        Modifier.fillMaxWidth().clickable { onOpen(r.place) }.padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Icon(painterResource(r.icon), contentDescription = null, tint = palette.accent, modifier = Modifier.size(22.dp))
-        Spacer(Modifier.width(14.dp))
-        Text(r.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("${r.count}", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
-        Spacer(Modifier.width(6.dp))
-        Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(16.dp))
+  // 大标题与搜索框随内容滚动：搜索框触顶后停在顶栏下（sticky），如 iOS。
+  LazyColumn(state = listState, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+    item(key = "title") {
+      Text("文件夹", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 4.dp))
+    }
+    stickyHeader(key = "search") {
+      Box(Modifier.background(palette.bg).padding(top = 8.dp, bottom = 4.dp)) {
+        IosSearch(query, onQuery, palette, Modifier.fillMaxWidth(), onActivated = onSearchStart)
       }
+    }
+    val rows = folderRows(folders, savedFolderOrder(context))
+    groupItems(rows, key = { it.title }, inset = 54) { r ->
+      FolderRowView(r, palette) { onOpen(r.place) }
     }
     item {
       TextButton(onClick = onNewFolder, modifier = Modifier.padding(top = 8.dp, start = 2.dp)) {
@@ -484,8 +607,14 @@ private fun bucket(n: NItem, today: LocalDate): String {
   }
 }
 
+/** 选中集合的保存：转屏后已选的还在。 */
+private val StringSetSaver = listSaver<Set<String>, String>(
+  save = { it.toList() },
+  restore = { it.toSet() },
+)
+
 /** One folder's notes, as iOS lists or shows them in the gallery. */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun NoteListScreen(
   engine: AccountInterface,
@@ -513,6 +642,13 @@ private fun NoteListScreen(
   var menu by remember { mutableStateOf(false) }
   var view by rememberSaveable { mutableStateOf("list") }
   var chosen by remember { mutableStateOf<NItem?>(null) }
+  // 选择模式：⋯ 菜单进入，行前出现圆圈，底部是移动与删除，“完成”退出。
+  var selecting by rememberSaveable { mutableStateOf(false) }
+  var selected by rememberSaveable(stateSaver = StringSetSaver) { mutableStateOf<Set<String>>(emptySet()) }
+  var moving by remember { mutableStateOf(false) }
+  val listState = rememberLazyListState()
+  // 大标题滚出屏幕后，顶栏中间淡入文件夹名，如 iOS 的收起。
+  val collapsed = listState.firstVisibleItemIndex > 0
 
   /** 长按或画廊里长按的唯一操作：置顶（回收站里没有）。删除在笔记打开后的“更多”里。 */
   fun pin(n: NItem) = scope.launch {
@@ -520,6 +656,7 @@ private fun NoteListScreen(
       .onFailure { onProblem((it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。") }
     syncNotes(context); onGeneration()
   }
+  BackHandler(enabled = selecting) { selecting = false; selected = emptySet() }
 
   if (searching) {
     // 搜索模式：顶栏与大标题都消失，搜索框上移，右侧是取消；输入后才出现结果。
@@ -531,6 +668,50 @@ private fun NoteListScreen(
         NoteList(notes, grouped = false, palette, pinnable = true, onOpen = onOpen, onChoose = { chosen = it })
       }
     }
+  } else if (selecting && !trash) {
+    // 选择模式：顶栏是“全选”与“完成”，行前出现圆圈，底部是移动与删除，如 iOS。
+    val all = notes.map { it.guid }.toSet()
+    val allPicked = selected.containsAll(all)
+    IosBar {
+      TextButton(onClick = { selected = if (allPicked) emptySet() else all }) {
+        Text(if (allPicked) "取消全选" else "全选", color = palette.accent)
+      }
+      Spacer(Modifier.weight(1f))
+      Text("${selected.size}", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
+      Spacer(Modifier.weight(1f))
+      TextButton(onClick = { selecting = false; selected = emptySet() }) { Text("完成", color = palette.accent) }
+    }
+    Box(Modifier.fillMaxSize()) {
+      NoteList(
+        notes, grouped = true, palette, pinnable = false,
+        selecting = true, isSelected = { selected.contains(it) },
+        onToggle = { g -> selected = if (selected.contains(g)) selected - g else selected + g },
+        onOpen = {}, onChoose = {},
+        modifier = Modifier.fillMaxSize(), bottomPad = 110.dp,
+      )
+      Column(Modifier.align(Alignment.BottomCenter).background(palette.bg)) {
+        IosBar {
+          IconButton(enabled = selected.isNotEmpty(), onClick = { moving = true }) {
+            Icon(painterResource(R.drawable.ic_folder), contentDescription = "移动",
+              tint = if (selected.isEmpty()) palette.secondary else palette.accent)
+          }
+          Spacer(Modifier.weight(1f))
+          IconButton(enabled = selected.isNotEmpty(), onClick = {
+            val pick = selected; selecting = false; selected = emptySet()
+            scope.launch {
+              for (g in pick) {
+                runCatching { withContext(Dispatchers.IO) { engine.noteDelete(g) } }
+                  .onFailure { onProblem((it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。") }
+              }
+              syncNotes(context)
+            }
+          }) {
+            Icon(painterResource(R.drawable.ic_trash), contentDescription = "删除",
+              tint = if (selected.isEmpty()) palette.secondary else palette.delete)
+          }
+        }
+      }
+    }
   } else {
     IosBar {
       Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
@@ -539,9 +720,11 @@ private fun NoteListScreen(
         }
         Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent)
       }
-      if (!trash) {
-        IconButton(onClick = onNew) {
-          Icon(painterResource(R.drawable.ic_edit), contentDescription = "新备忘录", tint = palette.accent)
+      // 收起后文件夹名淡入顶栏中间，如 iOS。
+      Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+        if (collapsed) {
+          Text(folder.title, style = MaterialTheme.typography.bodyLarge, color = palette.accent,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
       }
       Box {
@@ -553,6 +736,7 @@ private fun NoteListScreen(
             text = { Text(if (view == "list") "画廊视图" else "列表视图") },
             onClick = { menu = false; view = if (view == "list") "gallery" else "list" },
           )
+          if (!trash) DropdownMenuItem(text = { Text("选择备忘录") }, onClick = { menu = false; selected = emptySet(); selecting = true })
           if (own) {
             DropdownMenuItem(text = { Text("重新命名文件夹") }, onClick = { menu = false; onRename() })
             DropdownMenuItem(text = { Text("删除文件夹", color = palette.delete) }, onClick = { menu = false; onDelete() })
@@ -560,26 +744,76 @@ private fun NoteListScreen(
         }
       }
     }
-    Column(Modifier.padding(horizontal = 20.dp)) {
-      Text(folder.title, style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
-      Text(
-        when {
-          notes.size == 1 -> "1 个备忘录"
-          notes.isEmpty() -> "没有备忘录"
-          else -> "${notes.size} 个备忘录"
-        },
-        style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
-      )
-      IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp, bottom = 4.dp), onActivated = onSearchStart)
-    }
-    if (notes.isEmpty()) {
-      Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("没有备忘录", color = palette.secondary)
+    if (view == "gallery" && !trash) {
+      // 画廊：两列卡片。卡片网格是自己的滚动容器，标题与搜索固定在顶部。
+      Column(Modifier.padding(horizontal = 20.dp)) {
+        Text(folder.title, style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+          when {
+            notes.size == 1 -> "1 个备忘录"
+            notes.isEmpty() -> "没有备忘录"
+            else -> "${notes.size} 个备忘录"
+          },
+          style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
+        )
+        IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp, bottom = 4.dp), onActivated = onSearchStart)
       }
-    } else if (view == "gallery") {
-      Gallery(notes, palette, onOpen = onOpen, onChoose = { chosen = it })
+      Box(Modifier.fillMaxSize()) {
+        if (notes.isEmpty()) {
+          Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有备忘录", color = palette.secondary) }
+        } else {
+          Gallery(notes, palette, onOpen = onOpen, onChoose = { chosen = it })
+        }
+        if (!trash) Fab(onNew, palette, Modifier.align(Alignment.BottomEnd))
+      }
     } else {
-      NoteList(notes, grouped = true, palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it })
+      Box(Modifier.fillMaxSize()) {
+      // 列表：大标题与搜索框随内容滚动，搜索框触顶后停在顶栏下（sticky），如 iOS。
+      LazyColumn(
+        state = listState, modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 120.dp),
+      ) {
+        item(key = "title") {
+          Column(Modifier.padding(horizontal = 4.dp)) {
+            Text(folder.title, style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+              when {
+                notes.size == 1 -> "1 个备忘录"
+                notes.isEmpty() -> "没有备忘录"
+                else -> "${notes.size} 个备忘录"
+              },
+              style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
+            )
+          }
+        }
+        stickyHeader(key = "search") {
+          Box(Modifier.background(palette.bg).padding(top = 8.dp, bottom = 4.dp)) {
+            IosSearch(query, onQuery, palette, Modifier.fillMaxWidth(), onActivated = onSearchStart)
+          }
+        }
+        if (notes.isEmpty()) {
+          item {
+            Box(Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+              Text("没有备忘录", color = palette.secondary)
+            }
+          }
+        } else {
+          val today = LocalDate.now()
+          for ((name, list) in notes.groupBy { bucket(it, today) }.toList()) {
+            item(key = "h-$name") {
+              Text(
+                name, style = MaterialTheme.typography.titleSmall, color = palette.secondary,
+                modifier = Modifier.padding(start = 8.dp, top = 16.dp, bottom = 6.dp),
+              )
+            }
+            groupItems(list, key = { "n-${it.guid}" }, inset = 16) { n ->
+              NoteRow(n, palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it })
+            }
+          }
+        }
+      }
+        if (!trash) Fab(onNew, palette, Modifier.align(Alignment.BottomEnd))
+      }
     }
   }
   chosen?.let { n ->
@@ -588,6 +822,33 @@ private fun NoteListScreen(
         text = { Text(if (n.pinned) "取消置顶" else "置顶") },
         onClick = { chosen = null; pin(n) },
       )
+    }
+  }
+  if (moving && selected.isNotEmpty()) {
+    MoveDialog(folders, folder.guid, palette, onDismiss = { moving = false }) { to ->
+      moving = false
+      val pick = selected; selecting = false; selected = emptySet()
+      scope.launch {
+        for (g in pick) {
+          runCatching { withContext(Dispatchers.IO) { engine.noteMove(g, to) } }
+            .onFailure { onProblem((it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。") }
+        }
+        syncNotes(context)
+      }
+    }
+  }
+}
+
+/** 右下角悬浮的新建按钮：白底圆形、主题色铅笔，如 iOS 的列表页。 */
+@Composable
+private fun Fab(onNew: () -> Unit, palette: IosPalette, modifier: Modifier = Modifier) {
+  Surface(
+    onClick = onNew,
+    color = palette.card, shape = CircleShape, shadowElevation = 8.dp,
+    modifier = modifier.padding(20.dp).size(56.dp),
+  ) {
+    Box(contentAlignment = Alignment.Center) {
+      Icon(painterResource(R.drawable.ic_edit), contentDescription = "新备忘录", tint = palette.accent, modifier = Modifier.size(24.dp))
     }
   }
 }
@@ -601,12 +862,17 @@ private fun NoteList(
   grouped: Boolean,
   palette: IosPalette,
   pinnable: Boolean = true,
+  selecting: Boolean = false,
+  isSelected: (String) -> Boolean = { false },
+  onToggle: (String) -> Unit = {},
   onOpen: (NItem) -> Unit,
   onChoose: (NItem) -> Unit,
+  modifier: Modifier = Modifier,
+  bottomPad: androidx.compose.ui.unit.Dp = 24.dp,
 ) {
   val today = LocalDate.now()
   val sections = if (grouped) notes.groupBy { bucket(it, today) }.toList() else listOf("" to notes)
-  LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+  LazyColumn(modifier = modifier, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = bottomPad)) {
     for ((name, list) in sections) {
       if (name.isNotEmpty()) item(key = "h-$name") {
         Text(
@@ -615,36 +881,65 @@ private fun NoteList(
         )
       }
       groupItems(list, key = { "n-${it.guid}" }, inset = 16) { n ->
-        NoteRow(n, palette, pinnable, onOpen = onOpen, onChoose = onChoose)
+        NoteRow(n, palette, pinnable, selecting, isSelected(n.guid), onOpen = onOpen, onChoose = onChoose, onToggle = { onToggle(n.guid) })
       }
     }
   }
 }
 
-/** 一行备忘录：点开，长按弹出置顶（删除只在笔记打开后的“更多”菜单里，如 iOS 原版）。 */
+/** 选择模式的圆圈：空心为未选，主题色实心加白勾为已选，如 iOS。 */
+@Composable
+private fun SelectCircle(checked: Boolean, palette: IosPalette) {
+  Box(
+    Modifier.size(22.dp)
+      .clip(CircleShape)
+      .then(
+        if (checked) Modifier.background(palette.accent)
+        else Modifier.border(1.5.dp, palette.secondary, CircleShape)
+      ),
+    contentAlignment = Alignment.Center,
+  ) {
+    if (checked) Icon(painterResource(R.drawable.ic_check), contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+  }
+}
+
+/** 一行备忘录：点开（选择模式里点了是选中），长按弹出置顶（删除只在笔记打开后的“更多”菜单里，如 iOS 原版）。 */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun NoteRow(
   n: NItem,
   palette: IosPalette,
   pinnable: Boolean = true,
+  selecting: Boolean = false,
+  selected: Boolean = false,
   onOpen: (NItem) -> Unit,
   onChoose: (NItem) -> Unit,
+  onToggle: () -> Unit = {},
 ) {
   var menu by remember { mutableStateOf(false) }
   Box {
     Column(
-      Modifier.fillMaxWidth().combinedClickable(onClick = { onOpen(n) }, onLongClick = { if (pinnable) menu = true })
-        .padding(horizontal = 14.dp, vertical = 10.dp),
+      Modifier.fillMaxWidth().combinedClickable(
+        onClick = { if (selecting) onToggle() else onOpen(n) },
+        onLongClick = { if (pinnable && !selecting) menu = true },
+      ).padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
-      Text(n.title.ifBlank { "新备忘录" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-      Row(Modifier.padding(top = 2.dp)) {
-        Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
-        Spacer(Modifier.width(8.dp))
-        Text(noteSnippet(n), style = MaterialTheme.typography.bodyMedium, color = palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        if (selecting) {
+          SelectCircle(selected, palette)
+          Spacer(Modifier.width(12.dp))
+        }
+        Column(Modifier.weight(1f)) {
+          Text(n.title.ifBlank { "新备忘录" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          Row(Modifier.padding(top = 2.dp)) {
+            Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
+            Spacer(Modifier.width(8.dp))
+            Text(noteSnippet(n), style = MaterialTheme.typography.bodyMedium, color = palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
+        }
       }
     }
-    if (pinnable) DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
+    if (pinnable && !selecting) DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
       DropdownMenuItem(text = { Text(if (n.pinned) "取消置顶" else "置顶") }, onClick = { menu = false; onChoose(n) })
     }
   }
@@ -817,33 +1112,45 @@ private fun NoteEditor(
   }
   if (moving) {
     val g = guid
-    AlertDialog(
-      onDismissRequest = { moving = false },
-      containerColor = palette.card,
-      title = { Text("移动备忘录") },
-      text = {
-        Column(Modifier.verticalScroll(rememberScrollState())) {
-          // Notes' own folder (no folder) first, then the person's; Recently Deleted is not a place to move to.
-          val choices = listOf<Pair<String?, String>>(null to "备忘录") + folders.filter { !it.trash }.map { it.guid to it.title }
-          for ((to, title) in choices) {
-            Row(
-              Modifier.fillMaxWidth().clickable {
-                moving = false
-                if (g != null && to != d.folderGuid) act({ engine.noteMove(g, to) }) { load() }
-              }.padding(vertical = 12.dp),
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              Icon(painterResource(R.drawable.ic_folder), contentDescription = null, tint = palette.accent, modifier = Modifier.size(20.dp))
-              Spacer(Modifier.width(14.dp))
-              Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-              if (to == d.folderGuid) Icon(painterResource(R.drawable.ic_check), contentDescription = "在这里", tint = palette.accent, modifier = Modifier.size(18.dp))
-            }
+    MoveDialog(folders, d.folderGuid, palette, onDismiss = { moving = false }) { to ->
+      moving = false
+      if (g != null && to != d.folderGuid) act({ engine.noteMove(g, to) }) { load() }
+    }
+  }
+}
+
+/** 移动备忘录的对话框：Notes 自己的文件夹在最前，最近删除不在此列。列表页的选择模式也用它。 */
+@Composable
+private fun MoveDialog(
+  folders: List<NFolder>,
+  current: String?,
+  palette: IosPalette,
+  onDismiss: () -> Unit,
+  onMove: (String?) -> Unit,
+) {
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    containerColor = palette.card,
+    title = { Text("移动备忘录") },
+    text = {
+      Column(Modifier.verticalScroll(rememberScrollState())) {
+        // Notes' own folder (no folder) first, then the person's; Recently Deleted is not a place to move to.
+        val choices = listOf<Pair<String?, String>>(null to "备忘录") + folders.filter { !it.trash }.map { it.guid to it.title }
+        for ((to, title) in choices) {
+          Row(
+            Modifier.fillMaxWidth().clickable { onMove(to) }.padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(painterResource(R.drawable.ic_folder), contentDescription = null, tint = palette.accent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(14.dp))
+            Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            if (to == current) Icon(painterResource(R.drawable.ic_check), contentDescription = "在这里", tint = palette.accent, modifier = Modifier.size(18.dp))
           }
         }
-      },
-      confirmButton = { TextButton(onClick = { moving = false }) { Text("取消", color = palette.accent) } },
-    )
-  }
+      }
+    },
+    confirmButton = { TextButton(onClick = onDismiss) { Text("取消", color = palette.accent) } },
+  )
 }
 
 /** One line of a note, laid out once: where it starts, its text, its paragraph and the spans on it. */
