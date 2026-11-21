@@ -95,6 +95,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -199,11 +200,23 @@ private fun NPlace.depth(): Int = when (this) {
  * 列表与画廊两种视图）、可读可写的编辑页。每次改动立刻上屏，后台发往 iCloud；格式由引擎保全。
  */
 @Composable
-fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
+fun NotesPage(
+  engine: AccountInterface,
+  onOpenSettings: () -> Unit = {},
+  newNoteLaunch: Boolean = false,
+  onNewNoteConsumed: () -> Unit = {},
+) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val palette = iosPalette()
   var place by rememberSaveable(stateSaver = NPlaceSaver) { mutableStateOf<NPlace>(NPlace.Folders) }
+  // 长按图标的新备忘录：一进来就在 Apple 的“备忘录”文件夹里开一篇新的。
+  LaunchedEffect(newNoteLaunch) {
+    if (newNoteLaunch) {
+      place = NPlace.Open(null, NPlace.Folder(DEFAULT_FOLDER, "备忘录"))
+      onNewNoteConsumed()
+    }
+  }
   var folders by remember { mutableStateOf<List<NFolder>>(emptyList()) }
   var notes by remember { mutableStateOf<List<NItem>>(emptyList()) }
   var query by remember { mutableStateOf("") }
@@ -1314,8 +1327,19 @@ private fun NoteEditor(
         )
         editing -> {
           // The keyboard comes up with the editor, as Notes opens a new or tapped note ready to type.
+          // Hot-start jumps (the shortcut while the app is alive) need a beat before the field is
+          // ready to take focus; the tiny wait costs nothing on a cold start. Android 12 only
+          // raises the keyboard for a user interaction, so the jump from the icon shortcut goes
+          // through the window's insets controller — that route is always allowed.
           val focus = remember { FocusRequester() }
-          LaunchedEffect(Unit) { focus.requestFocus() }
+          val keyboard = LocalSoftwareKeyboardController.current
+          LaunchedEffect(Unit) {
+            kotlinx.coroutines.delay(400)
+            focus.requestFocus()
+            val activity = context as? android.app.Activity
+            val controller = activity?.window?.decorView?.let { androidx.core.view.ViewCompat.getWindowInsetsController(it) }
+            if (controller != null) controller.show(androidx.core.view.WindowInsetsCompat.Type.ime()) else keyboard?.show()
+          }
           BasicTextField(
             value = text, onValueChange = { text = it },
             // An attachment shows as 📎, not the font's dotted "OBJ" box (discussion #199).

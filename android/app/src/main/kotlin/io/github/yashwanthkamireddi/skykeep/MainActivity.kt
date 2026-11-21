@@ -44,10 +44,13 @@ private fun markWelcomed(context: Context) =
 
 class MainActivity : ComponentActivity() {
   private var widgetLaunch by mutableStateOf<WidgetLaunchTarget?>(null)
+  // 长按图标的“新备忘录”快捷方式：冷启动看 onCreate 的 intent，热启动看 onNewIntent。
+  private var launchNewNote by mutableStateOf(false)
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     widgetLaunch = WidgetIntents.parseLaunchTarget(intent)
+    launchNewNote = intent?.action == ACTION_NEW_NOTE
     enableEdgeToEdge()
     setContent {
       SkykeepTheme {
@@ -113,6 +116,8 @@ class MainActivity : ComponentActivity() {
             }
             Stage.Main -> NotesScreens(
               engine = engine!!,
+              newNoteLaunch = launchNewNote,
+              onNewNoteConsumed = { launchNewNote = false },
               onSignedOut = { stage = Stage.SignIn },
             )
           }
@@ -125,5 +130,10 @@ class MainActivity : ComponentActivity() {
     super.onNewIntent(intent)
     setIntent(intent)
     WidgetIntents.parseLaunchTarget(intent)?.let { widgetLaunch = it }
+    if (intent?.action == ACTION_NEW_NOTE) launchNewNote = true
+  }
+
+  companion object {
+    const val ACTION_NEW_NOTE = "io.github.yashwanthkamireddi.skykeep.notes.NEW_NOTE"
   }
 }
