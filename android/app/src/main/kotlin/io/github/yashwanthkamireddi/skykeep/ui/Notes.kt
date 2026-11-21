@@ -12,9 +12,6 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.text.style.TextAlign
@@ -223,13 +220,6 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
   BackHandler(enabled = place is NPlace.Folder) { place = NPlace.Folders; query = "" }
   BackHandler(enabled = place is NPlace.Folders && query.isNotBlank()) { query = "" }
 
-  /** 置顶或删除一篇搜索结果里的备忘录，然后刷新。 */
-  fun searchAct(n: NItem, write: () -> Unit) = scope.launch {
-    runCatching { withContext(Dispatchers.IO) { write() } }
-      .onFailure { problem = (it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。" }
-    syncNotes(context); generation++
-  }
-
   Column(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding()) {
     problem?.let { Text(it, color = palette.delete, modifier = Modifier.padding(20.dp, 12.dp)) }
     when (val p = place) {
@@ -267,7 +257,7 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
         if (notes.isEmpty()) {
           Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到备忘录", color = palette.secondary) }
         } else {
-          NoteList(notes, grouped = false, palette, onOpen = { n -> place = NPlace.Open(n.guid, NPlace.Folder(null, "所有 iCloud")) }, onChoose = {}, onPin = { n -> searchAct(n) { engine.notePin(n.guid, !n.pinned) } }, onRemove = { n -> searchAct(n) { engine.noteDelete(n.guid) } })
+          NoteList(notes, grouped = false, palette, onOpen = { n -> place = NPlace.Open(n.guid, NPlace.Folder(null, "所有 iCloud")) }, onChoose = {})
         }
       } else FolderScreen(
         folders, query, palette,
@@ -462,12 +452,12 @@ private fun NoteListScreen(
   var view by rememberSaveable { mutableStateOf("list") }
   var chosen by remember { mutableStateOf<NItem?>(null) }
 
-  fun act(n: NItem, write: () -> Unit) = scope.launch {
-    runCatching { withContext(Dispatchers.IO) { write() } }.onFailure { onProblem((it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。") }
+  /** 长按或画廊里长按的唯一操作：置顶（回收站里没有）。删除在笔记打开后的“更多”里。 */
+  fun pin(n: NItem) = scope.launch {
+    runCatching { withContext(Dispatchers.IO) { engine.notePin(n.guid, !n.pinned) } }
+      .onFailure { onProblem((it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。") }
     syncNotes(context); onGeneration()
   }
-  fun remove(n: NItem) = act(n) { engine.noteDelete(n.guid) }
-  fun pin(n: NItem) = act(n) { engine.notePin(n.guid, !n.pinned) }
 
   IosBar {
     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
@@ -517,15 +507,14 @@ private fun NoteListScreen(
   } else if (view == "gallery" && query.isBlank()) {
     Gallery(notes, palette, onOpen = onOpen, onChoose = { chosen = it })
   } else {
-    NoteList(notes, grouped = query.isBlank(), palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it }, onPin = ::pin, onRemove = ::remove)
+    NoteList(notes, grouped = query.isBlank(), palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it })
   }
   chosen?.let { n ->
     DropdownMenu(expanded = true, onDismissRequest = { chosen = null }, containerColor = palette.card) {
-      if (!trash) DropdownMenuItem(
+      DropdownMenuItem(
         text = { Text(if (n.pinned) "取消置顶" else "置顶") },
         onClick = { chosen = null; pin(n) },
       )
-      DropdownMenuItem(text = { Text("删除", color = palette.delete) }, onClick = { chosen = null; remove(n) })
     }
   }
 }
@@ -541,8 +530,6 @@ private fun NoteList(
   pinnable: Boolean = true,
   onOpen: (NItem) -> Unit,
   onChoose: (NItem) -> Unit,
-  onPin: (NItem) -> Unit,
-  onRemove: (NItem) -> Unit,
 ) {
   val today = LocalDate.now()
   val sections = if (grouped) notes.groupBy { bucket(it, today) }.toList() else listOf("" to notes)
@@ -555,65 +542,37 @@ private fun NoteList(
         )
       }
       groupItems(list, key = { "n-${it.guid}" }, inset = 16) { n ->
-        SwipeRow(n, palette, pinnable, onOpen = onOpen, onChoose = onChoose, onPin = onPin, onRemove = onRemove)
+        NoteRow(n, palette, pinnable, onOpen = onOpen, onChoose = onChoose)
       }
     }
   }
 }
 
-/** 一行备忘录，左右滑动是 iOS 的两个操作：右滑置顶（黄），左滑删除（红）。 */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+/** 一行备忘录：点开，长按弹出置顶（删除只在笔记打开后的“更多”菜单里，如 iOS 原版）。 */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun SwipeRow(
+private fun NoteRow(
   n: NItem,
   palette: IosPalette,
   pinnable: Boolean = true,
   onOpen: (NItem) -> Unit,
   onChoose: (NItem) -> Unit,
-  onPin: (NItem) -> Unit,
-  onRemove: (NItem) -> Unit,
 ) {
-  val state = rememberSwipeToDismissBoxState(
-    confirmValueChange = { v ->
-      when (v) {
-        SwipeToDismissBoxValue.StartToEnd -> { if (pinnable) onPin(n); false }
-        SwipeToDismissBoxValue.EndToStart -> { onRemove(n); true }
-        else -> false
+  var menu by remember { mutableStateOf(false) }
+  Box {
+    Column(
+      Modifier.fillMaxWidth().combinedClickable(onClick = { onOpen(n) }, onLongClick = { if (pinnable) menu = true })
+        .padding(horizontal = 14.dp, vertical = 10.dp),
+    ) {
+      Text(n.title.ifBlank { "新备忘录" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      Row(Modifier.padding(top = 2.dp)) {
+        Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
+        Spacer(Modifier.width(8.dp))
+        Text(noteSnippet(n), style = MaterialTheme.typography.bodyMedium, color = palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
-    },
-  )
-  SwipeToDismissBox(
-    state = state,
-    enableDismissFromStartToEnd = pinnable,
-    enableDismissFromEndToStart = true,
-    backgroundContent = {
-      val (icon, colour, atStart) = when (state.dismissDirection) {
-        SwipeToDismissBoxValue.StartToEnd -> Triple(R.drawable.ic_pin, palette.accent, true)
-        else -> Triple(R.drawable.ic_trash, palette.delete, false)
-      }
-      Box(
-        Modifier.fillMaxSize().background(colour).padding(horizontal = 20.dp),
-        contentAlignment = if (atStart) Alignment.CenterStart else Alignment.CenterEnd,
-      ) { Icon(painterResource(icon), contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp)) }
-    },
-  ) {
-    var menu by remember { mutableStateOf(false) }
-    Box {
-      Column(
-        Modifier.fillMaxWidth().combinedClickable(onClick = { onOpen(n) }, onLongClick = { menu = true })
-          .padding(horizontal = 14.dp, vertical = 10.dp),
-      ) {
-        Text(n.title.ifBlank { "新备忘录" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Row(Modifier.padding(top = 2.dp)) {
-          Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
-          Spacer(Modifier.width(8.dp))
-          Text(noteSnippet(n), style = MaterialTheme.typography.bodyMedium, color = palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-      }
-      DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
-        DropdownMenuItem(text = { Text(if (n.pinned) "取消置顶" else "置顶") }, onClick = { menu = false; onPin(n) })
-        DropdownMenuItem(text = { Text("删除", color = palette.delete) }, onClick = { menu = false; onRemove(n) })
-      }
+    }
+    if (pinnable) DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
+      DropdownMenuItem(text = { Text(if (n.pinned) "取消置顶" else "置顶") }, onClick = { menu = false; onChoose(n) })
     }
   }
 }
