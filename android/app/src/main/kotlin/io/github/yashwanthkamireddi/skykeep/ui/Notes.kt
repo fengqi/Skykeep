@@ -7,13 +7,20 @@ import android.content.ContentResolver
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -39,6 +46,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.zIndex
@@ -50,6 +58,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -1232,46 +1241,79 @@ private fun NoteEditor(
     }
   }
   Column(Modifier.fillMaxSize().imePadding()) {
-    // When it last changed, small and centred under the bar, as iOS shows it.
-    d.modifiedAt?.let { at ->
+    // When it last changed: hidden by default, shown only while pulling down at the top
+    // (like iOS' preview), gone again the moment the pull ends or a scroll goes up.
+    var showDate by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    AnimatedVisibility(
+      visible = showDate && d.modifiedAt != null,
+      enter = fadeIn(tween(120)) + expandVertically(tween(120)),
+      exit = fadeOut(tween(120)) + shrinkVertically(tween(120)),
+    ) {
       Text(
-        Instant.ofEpochSecond(at).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)),
+        d.modifiedAt?.let {
+          Instant.ofEpochSecond(it).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT))
+        } ?: "",
         style = MaterialTheme.typography.bodySmall, color = palette.secondary,
         modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp), textAlign = TextAlign.Center,
       )
     }
-    when {
-      d.locked -> Text(
-        "此备忘录已锁定。请在 iPhone、iPad 或 Mac 上用它的密码打开。",
-        style = MaterialTheme.typography.bodyLarge, color = palette.secondary, modifier = Modifier.padding(24.dp),
-      )
-      editing -> {
-        // The keyboard comes up with the editor, as Notes opens a new or tapped note ready to type.
-        val focus = remember { FocusRequester() }
-        LaunchedEffect(Unit) { focus.requestFocus() }
-        BasicTextField(
-          value = text, onValueChange = { text = it },
-          // An attachment shows as 📎, not the font's dotted "OBJ" box (discussion #199).
-          visualTransformation = AttachmentMarks,
-          textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface, lineHeight = 24.sp),
-          cursorBrush = SolidColor(palette.accent),
-          modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 8.dp).focusRequester(focus),
+    // 在顶部往下拉（橡皮筋）露日期；往上拉或松手收起。
+    Box(
+      Modifier.fillMaxSize().pointerInput(Unit) {
+        awaitEachGesture {
+          awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+          var prevY = Float.NaN
+          while (true) {
+            val e = awaitPointerEvent(PointerEventPass.Initial)
+            val c = e.changes.firstOrNull() ?: break
+            if (!c.pressed) break
+            if (!prevY.isNaN()) {
+              val dy = c.position.y - prevY
+              val top = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+              if (dy > 4f && top) showDate = true
+              else if (dy < -4f) showDate = false
+            }
+            prevY = c.position.y
+          }
+          showDate = false
+        }
+      },
+    ) {
+      when {
+        d.locked -> Text(
+          "此备忘录已锁定。请在 iPhone、iPad 或 Mac 上用它的密码打开。",
+          style = MaterialTheme.typography.bodyLarge, color = palette.secondary, modifier = Modifier.padding(24.dp),
         )
-      }
-      else -> RichNote(
-        d,
-        engine,
-        // 点行与行之间的空隙时兜底：光标落在文末。
-        Modifier.fillMaxSize().clickable(enabled = d.editable && !trashed) {
-          text = TextFieldValue(d.text, TextRange(d.text.length)); saved = d.text; editing = true
-        },
-        // 点正文哪一行，就落到哪个字上进入修改。
-        onPlace = { off ->
-          text = TextFieldValue(d.text, TextRange(off)); saved = d.text; editing = true
-        },
-      ) { at, checked ->
-        val g = guid ?: return@RichNote
-        act({ engine.noteCheck(g, at, checked) }) { load() }
+        editing -> {
+          // The keyboard comes up with the editor, as Notes opens a new or tapped note ready to type.
+          val focus = remember { FocusRequester() }
+          LaunchedEffect(Unit) { focus.requestFocus() }
+          BasicTextField(
+            value = text, onValueChange = { text = it },
+            // An attachment shows as 📎, not the font's dotted "OBJ" box (discussion #199).
+            visualTransformation = AttachmentMarks,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface, lineHeight = 24.sp),
+            cursorBrush = SolidColor(palette.accent),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 8.dp).focusRequester(focus),
+          )
+        }
+        else -> RichNote(
+          d,
+          engine,
+          listState,
+          // 点行与行之间的空隙时兜底：光标落在文末。
+          Modifier.fillMaxSize().clickable(enabled = d.editable && !trashed) {
+            text = TextFieldValue(d.text, TextRange(d.text.length)); saved = d.text; editing = true
+          },
+          // 点正文哪一行，就落到哪个字上进入修改。
+          onPlace = { off ->
+            text = TextFieldValue(d.text, TextRange(off)); saved = d.text; editing = true
+          },
+        ) { at, checked ->
+          val g = guid ?: return@RichNote
+          act({ engine.noteCheck(g, at, checked) }) { load() }
+        }
       }
     }
   }
@@ -1350,9 +1392,9 @@ private fun lay(d: NDoc): List<NoteLine> {
  * lines composed only as they scroll into view.
  */
 @Composable
-private fun RichNote(d: NDoc, engine: AccountInterface, modifier: Modifier, onPlace: (Int) -> Unit, onCheck: (UInt, Boolean) -> Unit) {
+private fun RichNote(d: NDoc, engine: AccountInterface, state: LazyListState, modifier: Modifier, onPlace: (Int) -> Unit, onCheck: (UInt, Boolean) -> Unit) {
   val lines = remember(d) { lay(d) }
-  LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+  LazyColumn(modifier, state, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
     items(lines.size) { i -> NoteLineView(lines[i], engine, onPlace, onCheck) }
   }
 }
