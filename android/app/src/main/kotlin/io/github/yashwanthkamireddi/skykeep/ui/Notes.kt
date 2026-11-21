@@ -890,7 +890,7 @@ private fun NoteListScreen(
     }
   } else {
     IosBar {
-      // “< 文件夹”紧贴成一组，如 iOS 顶栏；IconButton 的盒子会把图标垫高、垫远。
+      // “< 文件夹”紧贴成一组，如 iOS 顶栏；chevron 的画框左右各空一段，右移让它贴住文字。
       Row(
         Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).clickable(
           interactionSource = remember { MutableInteractionSource() }, indication = null,
@@ -898,7 +898,7 @@ private fun NoteListScreen(
         ).padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent, modifier = Modifier.size(22.dp))
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent, modifier = Modifier.size(22.dp).graphicsLayer { translationX = 7.dp.toPx() })
         Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent, modifier = Modifier.padding(start = 2.dp))
       }
       // 收起后文件夹名淡入顶栏中间，如 iOS。
@@ -1256,14 +1256,14 @@ private fun NoteEditor(
 
   IosBar {
     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-      // “< 所在文件夹”紧贴成一组，如 iOS；不用 IconButton，免得图标被盒子垫偏、垫远。
+      // “< 所在文件夹”紧贴成一组，如 iOS；chevron 的画框左右各空一段，右移让它贴住文字。
       Row(
         Modifier.clip(RoundedCornerShape(8.dp)).clickable(
           interactionSource = remember { MutableInteractionSource() }, indication = null,
         ) { save { onBack() } }.padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Icon(painterResource(R.drawable.ic_back), contentDescription = "返回", tint = palette.accent, modifier = Modifier.size(22.dp))
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "返回", tint = palette.accent, modifier = Modifier.size(22.dp).graphicsLayer { translationX = 7.dp.toPx() })
         Text(folderTitle, style = MaterialTheme.typography.bodyLarge, color = palette.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 2.dp))
       }
     }
