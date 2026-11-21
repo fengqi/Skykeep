@@ -469,7 +469,6 @@ private fun FolderScreen(
     }
     return
   }
-  var menu by remember { mutableStateOf(false) }
   val listState = rememberLazyListState()
   // 大标题滚出屏幕后，顶栏中间淡入小标题，如 iOS 的收起。
   val collapsed = listState.firstVisibleItemIndex > 0
@@ -538,18 +537,18 @@ private fun FolderScreen(
     return
   }
   IosBar {
+    Spacer(Modifier.weight(1f))
     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
       Text("文件夹", style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
         modifier = Modifier.graphicsLayer { alpha = if (collapsed) 1f else 0f })
     }
-    Box {
-      IconButton(onClick = { menu = true }) {
-        Icon(painterResource(R.drawable.ic_more), contentDescription = "更多", tint = palette.accent)
+    // 右上角依次：新建文件夹（icon）、编辑、设置（直接进设置页），如 iOS；不再用下拉菜单。
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      IconButton(onClick = onNewFolder) {
+        Icon(painterResource(R.drawable.ic_folder_plus), contentDescription = "新建文件夹", tint = palette.accent)
       }
-      DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
-        DropdownMenuItem(text = { Text("编辑") }, onClick = { menu = false; onEditing(true) })
-        DropdownMenuItem(text = { Text("设置") }, onClick = { menu = false; onSettings() })
-      }
+      TextButton(onClick = { onEditing(true) }) { Text("编辑", color = palette.accent) }
+      TextButton(onClick = onSettings) { Text("设置", color = palette.accent) }
     }
   }
   // 大标题与搜索框随内容滚动：搜索框触顶后停在顶栏下（sticky），如 iOS。
@@ -632,13 +631,6 @@ private fun FolderScreen(
             FolderRowView(r, palette, onClick = null)
           }
         }
-      }
-    }
-    item {
-      TextButton(onClick = onNewFolder, modifier = Modifier.padding(top = 8.dp, start = 2.dp)) {
-        Icon(painterResource(R.drawable.ic_folder_plus), contentDescription = null, tint = palette.accent, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("新建文件夹", color = palette.accent)
       }
     }
   }
