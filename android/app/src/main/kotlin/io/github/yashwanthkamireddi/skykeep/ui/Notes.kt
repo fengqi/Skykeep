@@ -898,7 +898,7 @@ private fun NoteListScreen(
         ).padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent, modifier = Modifier.size(30.dp).graphicsLayer { translationX = 9.dp.toPx() })
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent, modifier = Modifier.size(30.dp).graphicsLayer { translationX = 9.dp.toPx(); translationY = 1.5.dp.toPx() })
         Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent, modifier = Modifier.padding(start = 2.dp))
       }
       // 收起后文件夹名淡入顶栏中间，如 iOS。
@@ -1263,7 +1263,7 @@ private fun NoteEditor(
         ) { save { onBack() } }.padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Icon(painterResource(R.drawable.ic_back), contentDescription = "返回", tint = palette.accent, modifier = Modifier.size(30.dp).graphicsLayer { translationX = 9.dp.toPx() })
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "返回", tint = palette.accent, modifier = Modifier.size(30.dp).graphicsLayer { translationX = 9.dp.toPx(); translationY = 1.5.dp.toPx() })
         Text(folderTitle, style = MaterialTheme.typography.bodyLarge, color = palette.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 2.dp))
       }
     }
