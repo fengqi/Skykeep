@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
@@ -20,6 +21,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +45,58 @@ import uniffi.quince_mobile.AccountInterface
 
 /** Where the app is: the notes themselves, or their settings. */
 private enum class NotesPlace { Notes, Settings }
+
+/**
+ * 备忘录专用的一次设置：只创建同步账号、发起备忘录的第一次同步。纯备忘录应用不需要通讯录和
+ * 日历，权限不请求，这两个 authority 也直接关掉，Android 不会再为它们跑同步。
+ */
+@Composable
+fun NotesSetup(engine: AccountInterface, onDone: () -> Unit) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  val palette = iosPalette()
+  var problem by remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(Unit) {
+    val made = withContext(Dispatchers.IO) {
+      val tag = engine.accountTag()
+      if (tag == null) null
+      else {
+        val account = io.github.yashwanthkamireddi.skykeep.sync.ensureAccount(
+          context, engine.appleId() ?: "iCloud", tag,
+        )
+        // Contacts and Calendar stay out: no permission is held for them, so their syncs
+        // would only fail; switched off here, Android never asks for them on this account.
+        for (authority in listOf(
+          android.provider.ContactsContract.AUTHORITY,
+          android.provider.CalendarContract.AUTHORITY,
+        )) {
+          android.content.ContentResolver.cancelSync(account, authority)
+          android.content.ContentResolver.setSyncAutomatically(account, authority, false)
+          android.content.ContentResolver.setIsSyncable(account, authority, 0)
+        }
+        android.content.ContentResolver.requestSync(account, io.github.yashwanthkamireddi.skykeep.sync.NOTES_AUTHORITY, android.os.Bundle().apply {
+          putBoolean(android.content.ContentResolver.SYNC_EXTRAS_MANUAL, true)
+          putBoolean(android.content.ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
+        })
+        account
+      }
+    }
+    if (made == null) {
+      problem = "还没有登录会话，请重新打开应用登录。"
+    } else {
+      onDone()
+    }
+  }
+  Column(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding().padding(28.dp)) {
+    Spacer(Modifier.height(120.dp))
+    Text("正在准备同步…", style = MaterialTheme.typography.headlineMedium)
+    Spacer(Modifier.height(12.dp))
+    Text(
+      "正在把你的 iCloud 备忘录接到这台手机上。",
+      style = MaterialTheme.typography.bodyLarge, color = palette.secondary,
+    )
+    problem?.let { Text(it, color = palette.delete, modifier = Modifier.padding(top = 16.dp)) }
+  }
+}
 
 /**
  * 备忘录应用的全部界面：一进来就是备忘录（iOS 备忘录的黄），设置里有账户、没送出的改动和
