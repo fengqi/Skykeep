@@ -7,6 +7,7 @@ import android.content.ContentResolver
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
@@ -444,6 +445,11 @@ private fun FolderScreen(
   val listState = rememberLazyListState()
   // 大标题滚出屏幕后，顶栏中间淡入小标题，如 iOS 的收起。
   val collapsed = listState.firstVisibleItemIndex > 0
+  // 左滑动作一次只开一行：滚动、滑开另一行、点别的行，都会把开着的收起。
+  var openSwipe by remember { mutableStateOf<String?>(null) }
+  LaunchedEffect(listState.isScrollInProgress) {
+    if (listState.isScrollInProgress) openSwipe = null
+  }
   if (editing) {
     // 编辑模式：整张列表照旧（固定的行置灰），自建文件夹右侧有把手，按住拖动排序。
     // 拖动按列追踪手指的绝对位置：行换位后把手位置跟着换，手指不松，行不脱手。
@@ -535,13 +541,18 @@ private fun FolderScreen(
         FolderRowView(r, palette) { onOpen(r.place) }
       } else {
         // iOS 的左滑：滑出一截停下，露出“移动”与“删除”两个按钮。移动要子文件夹（引擎
-        // 还没暴露），先置灰；点删除弹确认，进“最近删除”。
-        var reveal by remember(r.place.guid) { mutableStateOf(false) }
+        // 还没暴露），先置灰；点删除弹确认，进“最近删除”。一次只开一行：滑开这行时别的
+        // 行收起；开着的行被滚动或点了别的行，也会收起（点别的行不进入，先收起）。
+        val open = openSwipe == r.place.guid
         var dragging by remember { mutableStateOf(false) }
         var dragX by remember { mutableFloatStateOf(0f) }
         val actionPx = with(LocalDensity.current) { 72.dp.toPx() }
         val revealPx = actionPx * 2
-        val shown = if (dragging) dragX else if (reveal) revealPx else 0f
+        val shown by animateFloatAsState(
+          targetValue = if (dragging) dragX else if (open) revealPx else 0f,
+          animationSpec = if (dragging) androidx.compose.animation.core.snap() else androidx.compose.animation.core.tween(200),
+          label = "folder-swipe",
+        )
         val dimBg = if (isSystemInDarkTheme()) Color(0xFF48484A) else Color(0xFFD1D1D6)
         Box(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
           Row(
@@ -550,7 +561,7 @@ private fun FolderScreen(
           ) {
             FolderSwipeAction(R.drawable.ic_folder, "移动", dimBg, palette.secondary, enabled = false, onClick = {})
             FolderSwipeAction(R.drawable.ic_trash, "删除", palette.delete, Color.White) {
-              reveal = false
+              openSwipe = null
               onDeleteFolder(folder)
             }
           }
@@ -560,16 +571,24 @@ private fun FolderScreen(
               .background(MaterialTheme.colorScheme.surfaceContainer)
               .pointerInput(r.place.guid) {
                 detectHorizontalDragGestures(
-                  onDragStart = { dragging = true; dragX = if (reveal) revealPx else 0f },
+                  onDragStart = { dragging = true; dragX = if (open) revealPx else 0f },
                   onHorizontalDrag = { change, amount ->
                     change.consume()
                     dragX = (dragX - amount).coerceIn(0f, revealPx)
+                    // 一开拖就占住这一行，别行（若开着）随即收起。
+                    if (dragX > 8f && openSwipe != r.place.guid) openSwipe = r.place.guid
                   },
-                  onDragEnd = { dragging = false; reveal = dragX > revealPx / 2 },
-                  onDragCancel = { dragging = false; reveal = dragX > revealPx / 2 },
+                  onDragEnd = { dragging = false; openSwipe = if (dragX > revealPx / 2) r.place.guid else null },
+                  onDragCancel = { dragging = false; openSwipe = if (dragX > revealPx / 2) r.place.guid else null },
                 )
               }
-              .clickable { if (reveal) reveal = false else onOpen(r.place) },
+              .clickable {
+                when {
+                  open -> openSwipe = null
+                  openSwipe != null -> openSwipe = null // 有行开着：先收起，不进入
+                  else -> onOpen(r.place)
+                }
+              },
             verticalAlignment = Alignment.CenterVertically,
           ) {
             FolderRowView(r, palette, onClick = null)
