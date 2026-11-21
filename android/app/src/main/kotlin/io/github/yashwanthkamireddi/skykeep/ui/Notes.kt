@@ -69,6 +69,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
@@ -180,6 +181,9 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
   var folders by remember { mutableStateOf<List<NFolder>>(emptyList()) }
   var notes by remember { mutableStateOf<List<NItem>>(emptyList()) }
   var query by remember { mutableStateOf("") }
+  // 搜索是一个模式：点搜索框进入（标题栏消失、搜索框上移、右侧出现取消），取消或返回退出。
+  var searching by rememberSaveable { mutableStateOf(false) }
+  fun cancelSearch() { searching = false; query = "" }
   var problem by remember { mutableStateOf<String?>(null) }
   var generation by remember { mutableIntStateOf(0) }
   var newFolder by remember { mutableStateOf(false) }
@@ -229,8 +233,8 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
   LaunchedEffect(place, query, generation) { reload() }
   // Back goes up one level: an open folder to the folders, search results to where they began;
   // an open note handles its own back (it saves).
-  BackHandler(enabled = place is NPlace.Folder) { place = NPlace.Folders; query = "" }
-  BackHandler(enabled = place is NPlace.Folders && query.isNotBlank()) { query = "" }
+  BackHandler(enabled = searching) { cancelSearch() }
+  BackHandler(enabled = !searching && place is NPlace.Folder) { place = NPlace.Folders; query = "" }
 
   Column(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding()) {
     problem?.let { Text(it, color = palette.delete, modifier = Modifier.padding(20.dp, 12.dp)) }
@@ -259,6 +263,9 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
           )
           is NPlace.Folder -> NoteListScreen(
             engine, p, folders, notes, query, palette,
+            searching = searching,
+            onSearchStart = { searching = true },
+            onCancelSearch = { cancelSearch() },
             onQuery = { query = it },
             onBack = { place = NPlace.Folders; query = "" },
             onOpen = { n -> place = NPlace.Open(n.guid, p) },
@@ -268,33 +275,17 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
             onGeneration = { generation++ },
             onProblem = { problem = it },
           )
-          NPlace.Folders -> if (query.isNotBlank()) {
-        // 在文件夹页搜索：搜的是所有 iCloud，结果是一个平铺的列表。
-        IosBar {
-          Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { query = "" }) {
-              Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent)
-            }
-            Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent)
-          }
-        }
-        Column(Modifier.padding(horizontal = 20.dp)) {
-          Text("搜索", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold))
-          Text("${notes.size} 个搜索结果", style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
-          IosSearch(query, { query = it }, palette, Modifier.padding(top = 8.dp, bottom = 4.dp))
-        }
-        if (notes.isEmpty()) {
-          Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到备忘录", color = palette.secondary) }
-        } else {
-          NoteList(notes, grouped = false, palette, onOpen = { n -> place = NPlace.Open(n.guid, NPlace.Folder(null, "所有 iCloud")) }, onChoose = {})
-        }
-      } else FolderScreen(
-        folders, query, palette,
-        onQuery = { query = it },
-        onOpen = { place = it },
-        onNewFolder = { newFolder = true },
-        onSettings = onOpenSettings,
-      )
+          NPlace.Folders -> FolderScreen(
+            folders, notes, query, palette,
+            searching = searching,
+            onSearchStart = { searching = true },
+            onCancelSearch = { cancelSearch() },
+            onQuery = { query = it },
+            onOpen = { place = it },
+            onOpenNote = { n -> place = NPlace.Open(n.guid, NPlace.Folder(null, "所有 iCloud")) },
+            onNewFolder = { newFolder = true },
+            onSettings = onOpenSettings,
+          )
         }
       }
     }
@@ -345,13 +336,30 @@ internal fun IosBar(content: @Composable RowScope.() -> Unit) {
 @Composable
 private fun FolderScreen(
   folders: List<NFolder>,
+  notes: List<NItem>,
   query: String,
   palette: IosPalette,
+  searching: Boolean,
+  onSearchStart: () -> Unit,
+  onCancelSearch: () -> Unit,
   onQuery: (String) -> Unit,
   onOpen: (NPlace.Folder) -> Unit,
+  onOpenNote: (NItem) -> Unit,
   onNewFolder: () -> Unit,
   onSettings: () -> Unit,
 ) {
+  if (searching) {
+    // 搜索模式：标题栏消失，搜索框上移到顶，右侧是取消；输入后才出现结果。
+    SearchRow(query, onQuery, palette, onCancelSearch, Modifier.padding(top = 4.dp))
+    if (query.isNotBlank()) {
+      if (notes.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到备忘录", color = palette.secondary) }
+      } else {
+        NoteList(notes, grouped = false, palette, pinnable = false, onOpen = onOpenNote, onChoose = {})
+      }
+    }
+    return
+  }
   var menu by remember { mutableStateOf(false) }
   IosBar {
     Spacer(Modifier.weight(1f))
@@ -366,7 +374,7 @@ private fun FolderScreen(
   }
   Column(Modifier.padding(horizontal = 20.dp)) {
     Text("文件夹", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold))
-    IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp))
+    IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp), onActivated = onSearchStart)
   }
   val all = folders.filter { !it.trash }.sumOf { it.count.toInt() }
   data class Row(val title: String, val count: Int, val icon: Int, val place: NPlace.Folder)
@@ -400,9 +408,18 @@ private fun FolderScreen(
   }
 }
 
-/** iOS 的搜索框：圆角灰底，占位“搜索”。 */
+/** iOS 的搜索框：圆角灰底，占位“搜索”。`onActivated` 在获得焦点（点进去）时触发，`focusNow` 直接弹键盘。 */
 @Composable
-private fun IosSearch(value: String, onChange: (String) -> Unit, palette: IosPalette, modifier: Modifier = Modifier) {
+private fun IosSearch(
+  value: String,
+  onChange: (String) -> Unit,
+  palette: IosPalette,
+  modifier: Modifier = Modifier,
+  onActivated: () -> Unit = {},
+  focusNow: Boolean = false,
+) {
+  val focus = remember { FocusRequester() }
+  LaunchedEffect(focusNow) { if (focusNow) focus.requestFocus() }
   Surface(
     color = if (isSystemInDarkTheme()) Color(0xFF1C1C1E) else Color(0xFFE3E3E9),
     shape = RoundedCornerShape(10.dp),
@@ -415,13 +432,24 @@ private fun IosSearch(value: String, onChange: (String) -> Unit, palette: IosPal
         value = value, onValueChange = onChange, singleLine = true,
         textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
         cursorBrush = SolidColor(palette.accent),
-        modifier = Modifier.weight(1f),
+        modifier = Modifier.weight(1f)
+          .onFocusChanged { if (it.isFocused) onActivated() }
+          .focusRequester(focus),
         decorationBox = { field ->
           if (value.isEmpty()) Text("搜索", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
           field()
         },
       )
     }
+  }
+}
+
+/** 搜索模式下的那一行：搜索框加右侧的取消。 */
+@Composable
+private fun SearchRow(query: String, onQuery: (String) -> Unit, palette: IosPalette, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+  Row(modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+    IosSearch(query, onQuery, palette, Modifier.weight(1f), focusNow = true)
+    TextButton(onClick = onCancel) { Text("取消", color = palette.accent) }
   }
 }
 
@@ -466,6 +494,9 @@ private fun NoteListScreen(
   notes: List<NItem>,
   query: String,
   palette: IosPalette,
+  searching: Boolean,
+  onSearchStart: () -> Unit,
+  onCancelSearch: () -> Unit,
   onQuery: (String) -> Unit,
   onBack: () -> Unit,
   onOpen: (NItem) -> Unit,
@@ -490,55 +521,66 @@ private fun NoteListScreen(
     syncNotes(context); onGeneration()
   }
 
-  IosBar {
-    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-      IconButton(onClick = onBack) {
-        Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent)
-      }
-      Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent)
-    }
-    if (!trash && query.isBlank()) {
-      IconButton(onClick = onNew) {
-        Icon(painterResource(R.drawable.ic_edit), contentDescription = "新备忘录", tint = palette.accent)
+  if (searching) {
+    // 搜索模式：顶栏与大标题都消失，搜索框上移，右侧是取消；输入后才出现结果。
+    SearchRow(query, onQuery, palette, onCancelSearch, Modifier.padding(top = 4.dp))
+    if (query.isNotBlank()) {
+      if (notes.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到备忘录", color = palette.secondary) }
+      } else {
+        NoteList(notes, grouped = false, palette, pinnable = true, onOpen = onOpen, onChoose = { chosen = it })
       }
     }
-    Box {
-      IconButton(onClick = { menu = true }) {
-        Icon(painterResource(R.drawable.ic_more), contentDescription = "更多", tint = palette.accent)
+  } else {
+    IosBar {
+      Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+          Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent)
+        }
+        Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent)
       }
-      DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
-        if (!trash && query.isBlank()) DropdownMenuItem(
-          text = { Text(if (view == "list") "画廊视图" else "列表视图") },
-          onClick = { menu = false; view = if (view == "list") "gallery" else "list" },
-        )
-        if (own) {
-          DropdownMenuItem(text = { Text("重新命名文件夹") }, onClick = { menu = false; onRename() })
-          DropdownMenuItem(text = { Text("删除文件夹", color = palette.delete) }, onClick = { menu = false; onDelete() })
+      if (!trash) {
+        IconButton(onClick = onNew) {
+          Icon(painterResource(R.drawable.ic_edit), contentDescription = "新备忘录", tint = palette.accent)
+        }
+      }
+      Box {
+        IconButton(onClick = { menu = true }) {
+          Icon(painterResource(R.drawable.ic_more), contentDescription = "更多", tint = palette.accent)
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
+          if (!trash) DropdownMenuItem(
+            text = { Text(if (view == "list") "画廊视图" else "列表视图") },
+            onClick = { menu = false; view = if (view == "list") "gallery" else "list" },
+          )
+          if (own) {
+            DropdownMenuItem(text = { Text("重新命名文件夹") }, onClick = { menu = false; onRename() })
+            DropdownMenuItem(text = { Text("删除文件夹", color = palette.delete) }, onClick = { menu = false; onDelete() })
+          }
         }
       }
     }
-  }
-  Column(Modifier.padding(horizontal = 20.dp)) {
-    Text(folder.title, style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
-    Text(
-      when {
-        query.isNotBlank() -> "${notes.size} 个搜索结果"
-        notes.size == 1 -> "1 个备忘录"
-        notes.isEmpty() -> "没有备忘录"
-        else -> "${notes.size} 个备忘录"
-      },
-      style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
-    )
-    IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp, bottom = 4.dp))
-  }
-  if (notes.isEmpty()) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-      Text(if (query.isBlank()) "没有备忘录" else "没有找到备忘录", color = palette.secondary)
+    Column(Modifier.padding(horizontal = 20.dp)) {
+      Text(folder.title, style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+      Text(
+        when {
+          notes.size == 1 -> "1 个备忘录"
+          notes.isEmpty() -> "没有备忘录"
+          else -> "${notes.size} 个备忘录"
+        },
+        style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
+      )
+      IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp, bottom = 4.dp), onActivated = onSearchStart)
     }
-  } else if (view == "gallery" && query.isBlank()) {
-    Gallery(notes, palette, onOpen = onOpen, onChoose = { chosen = it })
-  } else {
-    NoteList(notes, grouped = query.isBlank(), palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it })
+    if (notes.isEmpty()) {
+      Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text("没有备忘录", color = palette.secondary)
+      }
+    } else if (view == "gallery") {
+      Gallery(notes, palette, onOpen = onOpen, onChoose = { chosen = it })
+    } else {
+      NoteList(notes, grouped = true, palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it })
+    }
   }
   chosen?.let { n ->
     DropdownMenu(expanded = true, onDismissRequest = { chosen = null }, containerColor = palette.card) {
