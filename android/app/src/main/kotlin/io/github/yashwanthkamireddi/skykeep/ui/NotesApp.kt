@@ -122,6 +122,8 @@ private fun NotesSettingsScreen(engine: AccountInterface, onBack: () -> Unit, on
   val scope = rememberCoroutineScope()
   val palette = iosPalette()
   val account = remember { phoneAccount(context) }
+  // 手势与返回键都回到备忘录，不退出应用。
+  androidx.activity.compose.BackHandler(onBack = onBack)
   Column(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding()) {
     IosBar {
       IconButton(onClick = onBack) {
