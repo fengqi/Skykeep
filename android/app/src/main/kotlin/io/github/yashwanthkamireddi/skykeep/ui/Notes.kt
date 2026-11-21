@@ -477,7 +477,7 @@ private fun FolderRowView(r: FolderRow, palette: IosPalette, dimmed: Boolean = f
       .padding(horizontal = 14.dp, vertical = 12.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Icon(painterResource(r.icon), contentDescription = null, tint = if (dimmed) palette.secondary else palette.accent, modifier = Modifier.size(22.dp))
+    Icon(painterResource(r.icon), contentDescription = null, tint = if (dimmed) palette.secondary else palette.accent, modifier = Modifier.size(22.dp).graphicsLayer { translationY = 2.dp.toPx() })
     Spacer(Modifier.width(14.dp))
     Text(r.title, style = MaterialTheme.typography.bodyLarge, color = if (dimmed) palette.secondary else MaterialTheme.colorScheme.onSurface,
       modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
