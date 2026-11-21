@@ -890,11 +890,16 @@ private fun NoteListScreen(
     }
   } else {
     IosBar {
-      Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onBack) {
-          Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent)
-        }
-        Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent)
+      // “< 文件夹”紧贴成一组，如 iOS 顶栏；IconButton 的盒子会把图标垫高、垫远。
+      Row(
+        Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).clickable(
+          interactionSource = remember { MutableInteractionSource() }, indication = null,
+          onClick = onBack,
+        ).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent, modifier = Modifier.size(22.dp))
+        Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent, modifier = Modifier.padding(start = 2.dp))
       }
       // 收起后文件夹名淡入顶栏中间，如 iOS。
       Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
@@ -1251,10 +1256,16 @@ private fun NoteEditor(
 
   IosBar {
     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-      IconButton(onClick = { save { onBack() } }) {
-        Icon(painterResource(R.drawable.ic_back), contentDescription = "返回", tint = palette.accent)
+      // “< 所在文件夹”紧贴成一组，如 iOS；不用 IconButton，免得图标被盒子垫偏、垫远。
+      Row(
+        Modifier.clip(RoundedCornerShape(8.dp)).clickable(
+          interactionSource = remember { MutableInteractionSource() }, indication = null,
+        ) { save { onBack() } }.padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "返回", tint = palette.accent, modifier = Modifier.size(22.dp))
+        Text(folderTitle, style = MaterialTheme.typography.bodyLarge, color = palette.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 2.dp))
       }
-      Text(folderTitle, style = MaterialTheme.typography.bodyLarge, color = palette.accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
     if (!d.locked && editing) {
       TextButton(onClick = { save { editing = false; load() } }) { Text("完成", color = palette.accent) }
