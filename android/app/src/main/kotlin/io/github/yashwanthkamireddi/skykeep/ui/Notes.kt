@@ -982,6 +982,10 @@ private fun NoteListScreen(
             "title" -> notes.sortedWith(compareByDescending<NItem> { it.pinned }.thenComparator { a, b -> collator.compare(a.title, b.title) })
             else -> notes.sortedWith(compareByDescending<NItem> { it.pinned }.then(compareByDescending { it.modifiedAt ?: 0 }))
           }
+          // “所有 iCloud”（folder.guid 为空）是聚合视图：行底注明所属文件夹；具体文件夹里不用。
+          val showFolder = folder.guid == null
+          fun folderNameOf(n: NItem): String? =
+            if (showFolder) folders.firstOrNull { it.guid == n.folderGuid }?.let { folderDisplay(it) } else null
           if (savedSetting(context, "noteGroup", "on") == "on") {
             for ((name, list) in ordered.groupBy { bucket(it, today) }.toList()) {
               item(key = "h-$name") {
@@ -991,12 +995,12 @@ private fun NoteListScreen(
                 )
               }
               groupItems(list, key = { "n-${it.guid}" }, inset = 16) { n ->
-                NoteRow(n, palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it })
+                NoteRow(n, palette, pinnable = !trash, folderName = folderNameOf(n), onOpen = onOpen, onChoose = { chosen = it })
               }
             }
           } else {
             groupItems(ordered, key = { "n-${it.guid}" }, inset = 16) { n ->
-              NoteRow(n, palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it })
+              NoteRow(n, palette, pinnable = !trash, folderName = folderNameOf(n), onOpen = onOpen, onChoose = { chosen = it })
             }
           }
         }
@@ -1117,6 +1121,7 @@ private fun NoteRow(
   pinnable: Boolean = true,
   selecting: Boolean = false,
   selected: Boolean = false,
+  folderName: String? = null,
   onOpen: (NItem) -> Unit,
   onChoose: (NItem) -> Unit,
   onToggle: () -> Unit = {},
@@ -1136,10 +1141,20 @@ private fun NoteRow(
         }
         Column(Modifier.weight(1f)) {
           Text(n.title.ifBlank { "新备忘录" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-          Row(Modifier.padding(top = 2.dp)) {
-            Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
-            Spacer(Modifier.width(8.dp))
-            Text(noteSnippet(n), style = MaterialTheme.typography.bodyMedium, color = palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          // 时间与摘要合成一段文字：两个 Text 并排时，数字与中文走不同的字体回退，行框一高一低，基线就错开了。
+          Text(
+            changed(n.modifiedAt) + "  " + noteSnippet(n),
+            style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 2.dp),
+          )
+          // “所有 iCloud”这样的聚合列表里，行底写明它属于哪个文件夹，如 iOS。
+          folderName?.let {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+              Icon(painterResource(R.drawable.ic_folder), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(13.dp))
+              Spacer(Modifier.width(5.dp))
+              Text(it, style = MaterialTheme.typography.bodyMedium, color = palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
           }
         }
       }
