@@ -304,6 +304,7 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
             onOpen = { place = it },
             onOpenNote = { n -> place = NPlace.Open(n.guid, NPlace.Folder(null, "所有 iCloud")) },
             onNewFolder = { newFolder = true },
+            onCreateNote = { place = NPlace.Open(null, NPlace.Folder(DEFAULT_FOLDER, "备忘录")) },
             onSettings = onOpenSettings,
             onDeleteFolder = { f -> dropping = f },
           )
@@ -453,6 +454,7 @@ private fun FolderScreen(
   onOpen: (NPlace.Folder) -> Unit,
   onOpenNote: (NItem) -> Unit,
   onNewFolder: () -> Unit,
+  onCreateNote: () -> Unit,
   onSettings: () -> Unit,
   onDeleteFolder: (NFolder) -> Unit,
 ) {
@@ -639,8 +641,8 @@ private fun FolderScreen(
       }
     }
   }
-    // 左下角悬浮的新建文件夹，如 iOS；这样建的只是普通自建文件夹。
-    Fab(onNewFolder, palette, Modifier.align(Alignment.BottomStart), icon = R.drawable.ic_folder_plus, label = "新建文件夹")
+    // 右下角悬浮的新建备忘录，如 iOS：在 Apple 的“备忘录”文件夹里开一篇新的。
+    Fab(onCreateNote, palette, Modifier.align(Alignment.BottomEnd))
   }
 }
 
@@ -1136,7 +1138,8 @@ private fun NoteEditor(
   var saved by remember { mutableStateOf("") }
   var moving by remember { mutableStateOf(false) }
   var menu by remember { mutableStateOf(false) }
-  val folderTitle = folders.firstOrNull { it.guid == folderGuid }?.title ?: "备忘录"
+  // 系统文件夹按中文显示（引擎给的是账号语言的原文），自建的照原样。
+  val folderTitle = folders.firstOrNull { it.guid == folderGuid }?.let { folderDisplay(it) } ?: "备忘录"
 
   fun reason(t: Throwable) = (t as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "这篇备忘录没有保存下来。"
   fun load() = scope.launch {
