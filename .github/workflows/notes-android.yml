@@ -6,6 +6,12 @@ name: Notes android
 on:
   push:
     tags: ["20*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的日期标签（如 20261121，留空则用 notes-ios 最新提交构建）"
+        type: string
+        default: ""
 
 permissions:
   contents: write
