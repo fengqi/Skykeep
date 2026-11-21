@@ -68,5 +68,5 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" notes/*.apk \
             --title "备忘录 $GITHUB_REF_NAME" \
-            --notes "自动构建于 $(date -u '+%Y-%m-%d %H:%M UTC')，提交 $GITHUB_SHA。\
+            --notes "自动构建于 $(date -u '+%Y-%m-%d %H:%M UTC')，提交 $GITHUB_SHA。" \
             --latest
