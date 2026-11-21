@@ -61,8 +61,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -282,7 +285,6 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
             onOpen = { n -> place = NPlace.Open(n.guid, p) },
             onNew = { place = NPlace.Open(null, p) },
             onRename = { renaming = folders.firstOrNull { it.guid == p.guid && !it.trash } },
-            onDelete = { dropping = folders.firstOrNull { it.guid == p.guid && !it.trash } },
             onGeneration = { generation++ },
             onProblem = { problem = it },
           )
@@ -298,6 +300,7 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
             onOpenNote = { n -> place = NPlace.Open(n.guid, NPlace.Folder(null, "所有 iCloud")) },
             onNewFolder = { newFolder = true },
             onSettings = onOpenSettings,
+            onDeleteFolder = { f -> dropping = f },
           )
         }
       }
@@ -375,22 +378,27 @@ private fun folderRows(folders: List<NFolder>, order: List<String>): List<Folder
   }
 }
 
-/** 文件夹页一行（普通或编辑模式共用）。 */
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+/** 文件夹页一行（普通或编辑模式共用）。置灰的是固定行（编辑模式不能动）；grip 是编辑模式的排序把手。 */
 @Composable
-private fun FolderRowView(r: FolderRow, palette: IosPalette, dimmed: Boolean = false, onClick: (() -> Unit)? = { }) {
+private fun FolderRowView(r: FolderRow, palette: IosPalette, dimmed: Boolean = false, grip: Boolean = false, onClick: (() -> Unit)? = { }) {
   Row(
     Modifier.fillMaxWidth()
       .then(if (onClick != null) Modifier.clickable(enabled = !dimmed) { onClick() } else Modifier)
       .padding(horizontal = 14.dp, vertical = 12.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Icon(painterResource(r.icon), contentDescription = null, tint = palette.accent, modifier = Modifier.size(22.dp))
+    Icon(painterResource(r.icon), contentDescription = null, tint = if (dimmed) palette.secondary else palette.accent, modifier = Modifier.size(22.dp))
     Spacer(Modifier.width(14.dp))
-    Text(r.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Text(r.title, style = MaterialTheme.typography.bodyLarge, color = if (dimmed) palette.secondary else MaterialTheme.colorScheme.onSurface,
+      modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
     Text("${r.count}", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
-    Spacer(Modifier.width(6.dp))
-    Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(16.dp))
+    if (grip) {
+      Spacer(Modifier.width(12.dp))
+      Icon(painterResource(R.drawable.ic_reorder), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(20.dp))
+    } else {
+      Spacer(Modifier.width(6.dp))
+      Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(16.dp))
+    }
   }
 }
 
@@ -401,7 +409,7 @@ private fun <T> MutableList<T>.swapAt(a: Int, b: Int) {
 }
 
 /** The folders, as iOS lists them: All iCloud, each folder, Recently Deleted, one white card. */
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun FolderScreen(
   folders: List<NFolder>,
@@ -418,6 +426,7 @@ private fun FolderScreen(
   onOpenNote: (NItem) -> Unit,
   onNewFolder: () -> Unit,
   onSettings: () -> Unit,
+  onDeleteFolder: (NFolder) -> Unit,
 ) {
   val context = LocalContext.current
   if (searching) {
@@ -437,56 +446,59 @@ private fun FolderScreen(
   // 大标题滚出屏幕后，顶栏中间淡入小标题，如 iOS 的收起。
   val collapsed = listState.firstVisibleItemIndex > 0
   if (editing) {
-    // 编辑模式：自建文件夹按住拖动排序；固定的（所有 iCloud、备忘录、最近删除）不在列。
-    val user = folders.filter { it.guid != DEFAULT_FOLDER && !it.trash }
-    val saved = savedFolderOrder(context)
-    var order by remember { mutableStateOf(saved.mapNotNull { g -> user.firstOrNull { it.guid == g } } + user.filterNot { saved.contains(it.guid) }) }
-    var dragFrom by remember { mutableStateOf<Int?>(null) }
-    var dragOffset by remember { mutableFloatStateOf(0f) }
+    // 编辑模式：整张列表照旧（固定的行置灰），自建文件夹右侧有把手，按住拖动排序。
+    // 拖动按列追踪手指的绝对位置：行换位后把手位置跟着换，手指不松，行不脱手。
+    val scroll = rememberScrollState()
+    var rows by remember(folders) { mutableStateOf(folderRows(folders, savedFolderOrder(context))) }
+    var dragIndex by remember { mutableStateOf(-1) }
+    var touchShift by remember { mutableFloatStateOf(0f) }
+    var fingerY by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
     val rowHeight = with(density) { 56.dp.toPx() }
+    fun save() = saveFolderOrder(context, rows.filterNot { it.fixed }.mapNotNull { it.place.guid })
     IosBar {
       Spacer(Modifier.weight(1f))
-      TextButton(onClick = { saveFolderOrder(context, order.map { it.guid }); onEditing(false) }) { Text("完成", color = palette.accent) }
+      TextButton(onClick = { save(); onEditing(false) }) { Text("完成", color = palette.accent) }
     }
-    Column(Modifier.padding(horizontal = 20.dp)) {
-      Text("排序文件夹", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold))
-      Text("按住自建的文件夹上下拖动。“所有 iCloud”“备忘录”和“最近删除”的位置固定。", style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
-    }
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
-      order.forEachIndexed { i, f ->
-        val dragging = dragFrom == i
+    Column(
+      Modifier.fillMaxSize().verticalScroll(scroll).pointerInput(Unit) {
+        detectDragGesturesAfterLongPress(
+          onDragStart = { at ->
+            val i = ((at.y + scroll.value) / rowHeight).toInt()
+            if (i in rows.indices && !rows[i].fixed) {
+              dragIndex = i
+              touchShift = at.y % rowHeight
+              fingerY = at.y + scroll.value
+            }
+          },
+          onDrag = { change, drag ->
+            change.consume()
+            if (dragIndex >= 0) {
+              fingerY += drag.y
+              val to = (fingerY / rowHeight).toInt().coerceIn(0, rows.lastIndex)
+              if (to != dragIndex && !rows[to].fixed) {
+                rows = rows.toMutableList().also { it.swapAt(dragIndex, to) }
+                dragIndex = to
+              }
+            }
+          },
+          onDragEnd = { if (dragIndex >= 0) save(); dragIndex = -1 },
+          onDragCancel = { dragIndex = -1 },
+        )
+      }.padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+      rows.forEachIndexed { i, r ->
+        val dragging = dragIndex == i
         Row(
           Modifier.fillMaxWidth().height(56.dp)
             .zIndex(if (dragging) 1f else 0f)
-            .graphicsLayer { translationY = if (dragging) dragOffset else 0f }
-            .background(palette.card, if (dragging) MaterialTheme.shapes.large else androidx.compose.ui.graphics.RectangleShape)
-            .pointerInput(user) {
-              detectDragGesturesAfterLongPress(
-                onDragStart = { dragFrom = i; dragOffset = 0f },
-                onDrag = { change, drag ->
-                  change.consume()
-                  dragOffset += drag.y
-                  while (kotlin.math.abs(dragOffset) > rowHeight) {
-                    val dir = if (dragOffset > 0) 1 else -1
-                    val target = (i + dir).coerceIn(0, order.lastIndex)
-                    if (target != i) {
-                      order = order.toMutableList().also { it.swapAt(i, target) }
-                      dragOffset -= dir * rowHeight
-                      return@detectDragGesturesAfterLongPress
-                    } else { dragOffset = 0f; break }
-                  }
-                },
-                onDragEnd = { saveFolderOrder(context, order.map { it.guid }); dragFrom = null },
-                onDragCancel = { dragFrom = null },
-              )
-            }.padding(horizontal = 14.dp),
+            .graphicsLayer {
+              translationY = if (dragging) fingerY - touchShift - i * rowHeight + scroll.value else 0f
+            }
+            .background(palette.card, if (dragging) MaterialTheme.shapes.large else androidx.compose.ui.graphics.RectangleShape),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          Icon(painterResource(R.drawable.ic_folder), contentDescription = null, tint = palette.accent, modifier = Modifier.size(22.dp))
-          Spacer(Modifier.width(14.dp))
-          Text(f.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-          Text("${f.count}", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
+          FolderRowView(r, palette, dimmed = r.fixed, grip = !r.fixed, onClick = null)
         }
       }
     }
@@ -519,7 +531,31 @@ private fun FolderScreen(
     }
     val rows = folderRows(folders, savedFolderOrder(context))
     groupItems(rows, key = { it.title }, inset = 54) { r ->
-      FolderRowView(r, palette) { onOpen(r.place) }
+      val folder = folders.firstOrNull { it.guid == r.place.guid }
+      if (r.fixed || folder == null) {
+        FolderRowView(r, palette) { onOpen(r.place) }
+      } else {
+        // 自建文件夹左滑删除（红底垃圾桶，如 iOS）；确认后进“最近删除”。
+        val dismiss = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
+          if (v == SwipeToDismissBoxValue.EndToStart) onDeleteFolder(folder)
+          false
+        })
+        SwipeToDismissBox(
+          dismiss,
+          enableDismissFromStartToEnd = false,
+          backgroundContent = {
+            Box(Modifier.fillMaxSize().background(palette.delete)) {
+              Icon(painterResource(R.drawable.ic_trash), contentDescription = "删除",
+                tint = Color.White, modifier = Modifier.align(Alignment.CenterEnd).padding(end = 20.dp).size(20.dp))
+            }
+          },
+        ) {
+          // 行内容要自己铺上卡片色，否则滑动的红底会一直透出来。
+          Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+            FolderRowView(r, palette) { onOpen(r.place) }
+          }
+        }
+      }
     }
     item {
       TextButton(onClick = onNewFolder, modifier = Modifier.padding(top = 8.dp, start = 2.dp)) {
@@ -631,7 +667,6 @@ private fun NoteListScreen(
   onOpen: (NItem) -> Unit,
   onNew: () -> Unit,
   onRename: () -> Unit,
-  onDelete: () -> Unit,
   onGeneration: () -> Unit,
   onProblem: (String) -> Unit,
 ) {
@@ -737,10 +772,7 @@ private fun NoteListScreen(
             onClick = { menu = false; view = if (view == "list") "gallery" else "list" },
           )
           if (!trash) DropdownMenuItem(text = { Text("选择备忘录") }, onClick = { menu = false; selected = emptySet(); selecting = true })
-          if (own) {
-            DropdownMenuItem(text = { Text("重新命名文件夹") }, onClick = { menu = false; onRename() })
-            DropdownMenuItem(text = { Text("删除文件夹", color = palette.delete) }, onClick = { menu = false; onDelete() })
-          }
+          if (own) DropdownMenuItem(text = { Text("重新命名文件夹") }, onClick = { menu = false; onRename() })
         }
       }
     }
