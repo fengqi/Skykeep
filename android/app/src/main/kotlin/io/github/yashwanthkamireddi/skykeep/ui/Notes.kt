@@ -542,16 +542,16 @@ private fun FolderScreen(
       Text("文件夹", style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
         modifier = Modifier.graphicsLayer { alpha = if (collapsed) 1f else 0f })
     }
-    // 右上角依次：新建文件夹、编辑（排序）、设置（直接进设置页），全部图标，如 iOS 顶栏。
+    // 右上角依次：新建文件夹、排序、设置（直接进设置页），紧凑排开、贴着右边。
     Row(verticalAlignment = Alignment.CenterVertically) {
-      IconButton(onClick = onNewFolder) {
-        Icon(painterResource(R.drawable.ic_folder_plus), contentDescription = "新建文件夹", tint = palette.accent)
+      IconButton(onClick = onNewFolder, modifier = Modifier.size(40.dp)) {
+        Icon(painterResource(R.drawable.ic_folder_plus), contentDescription = "新建文件夹", tint = palette.accent, modifier = Modifier.size(22.dp))
       }
-      IconButton(onClick = { onEditing(true) }) {
-        Icon(painterResource(R.drawable.ic_reorder), contentDescription = "编辑", tint = palette.accent)
+      IconButton(onClick = { onEditing(true) }, modifier = Modifier.size(40.dp)) {
+        Icon(painterResource(R.drawable.ic_sort), contentDescription = "编辑", tint = palette.accent, modifier = Modifier.size(22.dp))
       }
-      IconButton(onClick = onSettings) {
-        Icon(painterResource(R.drawable.ic_settings), contentDescription = "设置", tint = palette.accent)
+      IconButton(onClick = onSettings, modifier = Modifier.size(40.dp)) {
+        Icon(painterResource(R.drawable.ic_settings), contentDescription = "设置", tint = palette.accent, modifier = Modifier.size(22.dp))
       }
     }
   }
