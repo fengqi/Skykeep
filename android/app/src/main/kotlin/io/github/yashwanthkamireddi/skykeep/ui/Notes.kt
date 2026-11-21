@@ -416,6 +416,16 @@ private fun saveFolderOrder(context: android.content.Context, order: List<String
     .edit().putString("folderOrder", order.joinToString(",")).apply()
 }
 
+/** 通用设置（备忘录排序、按日期分组、新备忘录开头、勾选排序），与本机顺序同库。 */
+fun savedSetting(context: android.content.Context, key: String, def: String): String =
+  context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+    .getString(key, null) ?: def
+
+fun saveSetting(context: android.content.Context, key: String, value: String) {
+  context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+    .edit().putString(key, value).apply()
+}
+
 /** 一个文件夹在文件夹页的一行。 */
 private data class FolderRow(val title: String, val count: Int, val icon: Int, val place: NPlace.Folder, val fixed: Boolean = false)
 
@@ -943,15 +953,28 @@ private fun NoteListScreen(
             }
           }
         } else {
+          // 排序与分组照设置：编辑日期（默认）/创建日期/标题，按日期分组（默认开）。
+          // 置顶的始终在前。创建日期引擎还没有字段，暂与编辑日期一致。
           val today = LocalDate.now()
-          for ((name, list) in notes.groupBy { bucket(it, today) }.toList()) {
-            item(key = "h-$name") {
-              Text(
-                name, style = MaterialTheme.typography.titleSmall, color = palette.secondary,
-                modifier = Modifier.padding(start = 8.dp, top = 16.dp, bottom = 6.dp),
-              )
+          val collator = java.text.Collator.getInstance(java.util.Locale.getDefault())
+          val ordered = when (savedSetting(context, "noteSort", "edited")) {
+            "title" -> notes.sortedWith(compareByDescending<NItem> { it.pinned }.thenComparator { a, b -> collator.compare(a.title, b.title) })
+            else -> notes.sortedWith(compareByDescending<NItem> { it.pinned }.then(compareByDescending { it.modifiedAt ?: 0 }))
+          }
+          if (savedSetting(context, "noteGroup", "on") == "on") {
+            for ((name, list) in ordered.groupBy { bucket(it, today) }.toList()) {
+              item(key = "h-$name") {
+                Text(
+                  name, style = MaterialTheme.typography.titleSmall, color = palette.secondary,
+                  modifier = Modifier.padding(start = 8.dp, top = 16.dp, bottom = 6.dp),
+                )
+              }
+              groupItems(list, key = { "n-${it.guid}" }, inset = 16) { n ->
+                NoteRow(n, palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it })
+              }
             }
-            groupItems(list, key = { "n-${it.guid}" }, inset = 16) { n ->
+          } else {
+            groupItems(ordered, key = { "n-${it.guid}" }, inset = 16) { n ->
               NoteRow(n, palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it })
             }
           }
@@ -1304,6 +1327,8 @@ private fun NoteEditor(
           engine,
           listState,
           Modifier.fillMaxSize(),
+          // 打勾的待办按设置排到段末（自动）或原地不动（手动）。
+          autoCheck = savedSetting(context, "checkSort", "auto") == "auto",
           // 点正文哪一行，就落到哪个字上进入修改。
           onPlace = { off ->
             text = TextFieldValue(d.text, TextRange(off)); saved = d.text; editing = true
@@ -1389,9 +1414,26 @@ private fun lay(d: NDoc): List<NoteLine> {
  * A note drawn with its formatting, each line by its paragraph style, checklist items tickable;
  * lines composed only as they scroll into view.
  */
+/** 勾选项自动排序：每段连续的待办列表里，打勾的排到未打勾的后面（行带原偏移，勾选不受影响）。 */
+private fun checkSorted(lines: List<NoteLine>): List<NoteLine> {
+  val out = mutableListOf<NoteLine>()
+  var block = mutableListOf<NoteLine>()
+  fun flush() {
+    if (block.isNotEmpty()) {
+      val (open, done) = block.partition { it.para?.checked != true }
+      out.addAll(open); out.addAll(done); block = mutableListOf()
+    }
+  }
+  for (l in lines) {
+    if (l.para?.style?.toInt() == 103) block.add(l) else flush().also { out.add(l) }
+  }
+  flush()
+  return out
+}
+
 @Composable
-private fun RichNote(d: NDoc, engine: AccountInterface, state: LazyListState, modifier: Modifier, onPlace: (Int) -> Unit, onCheck: (UInt, Boolean) -> Unit) {
-  val lines = remember(d) { lay(d) }
+private fun RichNote(d: NDoc, engine: AccountInterface, state: LazyListState, modifier: Modifier, autoCheck: Boolean, onPlace: (Int) -> Unit, onCheck: (UInt, Boolean) -> Unit) {
+  val lines = remember(d, autoCheck) { lay(d).let { if (autoCheck) checkSorted(it) else it } }
   LazyColumn(modifier, state, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
     items(lines.size) { i -> NoteLineView(lines[i], engine, onPlace, onCheck) }
   }
