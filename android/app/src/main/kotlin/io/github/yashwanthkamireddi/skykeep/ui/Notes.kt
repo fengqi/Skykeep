@@ -357,6 +357,19 @@ internal fun IosBar(content: @Composable RowScope.() -> Unit) {
 /** Apple 系统的“备忘录”文件夹：位置固定，如 iOS 把“所有 iCloud”与“备忘录”钉在顶部。 */
 private const val DEFAULT_FOLDER = "DefaultFolder-CloudKit"
 
+/**
+ * Apple 的“快速备忘录”文件夹：在 iCloud 里是一条普通 Folder 记录，引擎没有专门的 guid，
+ * 只能认它的名字（账号语言的原文，英文账号是 "Quick Notes"）。它按 iOS 置顶显示，位置固定。
+ */
+private const val QUICK_FOLDER_TITLE = "Quick Notes"
+
+/** 系统文件夹的显示名按中文（引擎给的是账号语言的原文）；自建的照原样。 */
+private fun folderDisplay(f: NFolder) = when {
+  f.guid == DEFAULT_FOLDER -> "备忘录"
+  f.title == QUICK_FOLDER_TITLE -> "快速备忘录"
+  else -> f.title
+}
+
 /** 自建文件夹的顺序（编辑模式拖出来的），按 guid 存在本机，如 iOS 存它自己的顺序。 */
 private fun savedFolderOrder(context: android.content.Context): List<String> =
   context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
@@ -370,16 +383,18 @@ private fun saveFolderOrder(context: android.content.Context, order: List<String
 /** 一个文件夹在文件夹页的一行。 */
 private data class FolderRow(val title: String, val count: Int, val icon: Int, val place: NPlace.Folder, val fixed: Boolean = false)
 
-/** 文件夹页的行序：所有 iCloud 固定顶，“备忘录”其次，自建的按本机保存的顺序，最近删除固定底。 */
+/** 文件夹页的行序：快速备忘录置顶，“所有 iCloud”其次，“备忘录”再次，自建的按本机保存的顺序，最近删除固定底。 */
 private fun folderRows(folders: List<NFolder>, order: List<String>): List<FolderRow> {
   val all = folders.filter { !it.trash }.sumOf { it.count.toInt() }
+  val quick = folders.filter { it.guid != DEFAULT_FOLDER && it.title == QUICK_FOLDER_TITLE && !it.trash }
   val system = folders.filter { it.guid == DEFAULT_FOLDER && !it.trash }
-  val user = folders.filter { it.guid != DEFAULT_FOLDER && !it.trash }
+  val user = folders.filter { it.guid != DEFAULT_FOLDER && it.title != QUICK_FOLDER_TITLE && !it.trash }
   val ordered = order.mapNotNull { g -> user.firstOrNull { it.guid == g } } + user.filterNot { f -> order.contains(f.guid) }
   return buildList {
+    quick.forEach { add(FolderRow(folderDisplay(it), it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, folderDisplay(it)), fixed = true)) }
     add(FolderRow("所有 iCloud", all, R.drawable.ic_folder, NPlace.Folder(null, "所有 iCloud"), fixed = true))
-    system.forEach { add(FolderRow(it.title, it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, it.title), fixed = true)) }
-    ordered.forEach { add(FolderRow(it.title, it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, it.title))) }
+    system.forEach { add(FolderRow(folderDisplay(it), it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, folderDisplay(it)), fixed = true)) }
+    ordered.forEach { add(FolderRow(folderDisplay(it), it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, folderDisplay(it)))) }
     folders.firstOrNull { it.trash }?.let { add(FolderRow("最近删除", it.count.toInt(), R.drawable.ic_trash, NPlace.Folder(it.guid, "最近删除"), fixed = true)) }
   }
 }
@@ -718,7 +733,10 @@ private fun NoteListScreen(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val trash = folders.firstOrNull { it.guid == folder.guid }?.trash == true
-  val own = folders.firstOrNull { it.guid == folder.guid && !it.trash } != null
+  // 自建的文件夹才能改名：系统的两个（备忘录、快速备忘录）和回收站不行。
+  val own = folders.firstOrNull { it.guid == folder.guid && !it.trash }?.let {
+    it.guid != DEFAULT_FOLDER && it.title != QUICK_FOLDER_TITLE
+  } == true
   var menu by remember { mutableStateOf(false) }
   var view by rememberSaveable { mutableStateOf("list") }
   var chosen by remember { mutableStateOf<NItem?>(null) }
