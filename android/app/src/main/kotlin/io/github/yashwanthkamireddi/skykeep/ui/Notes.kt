@@ -197,6 +197,8 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
   fun cancelSearch() { searching = false; query = "" }
   var problem by remember { mutableStateOf<String?>(null) }
   var generation by remember { mutableIntStateOf(0) }
+  // 第一次读取还没有落地：先不画任何屏，免得闪一眼“所有 iCloud 0”的空样子。
+  var ready by remember { mutableStateOf(false) }
   var newFolder by remember { mutableStateOf(false) }
   var renaming by remember { mutableStateOf<NFolder?>(null) }
   var dropping by remember { mutableStateOf<NFolder?>(null) }
@@ -222,11 +224,11 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
           }
           f to n
         }
-        folders = f; notes = n; problem = null
+        folders = f; notes = n; problem = null; ready = true
       } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
       } catch (t: Throwable) {
-        problem = reason(t)
+        problem = reason(t); ready = true
       }
     }.also { reading[0] = it }
   }
@@ -269,7 +271,10 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
       // 转场期间新旧两页同时在场：每页用纵向容器铺上自己的底色，否则两屏会透叠错位。
       // 各屏（顶栏、标题、列表）本是 Column 的子元素，这里也必须按纵向摆放。
       Column(Modifier.fillMaxSize().background(palette.bg)) {
-        when (p) {
+        when {
+          // 等第一次读取落地再画，冷启动就不会先闪空数据。
+          !ready -> {}
+          else -> when (p) {
           is NPlace.Open -> NoteEditor(
             engine, p.guid, p.from.guid, folders,
             onBack = { place = p.from; generation++ },
@@ -302,6 +307,7 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
             onSettings = onOpenSettings,
             onDeleteFolder = { f -> dropping = f },
           )
+          }
         }
       }
     }
