@@ -110,12 +110,19 @@ fun NotesSetup(engine: AccountInterface, onDone: () -> Unit) {
 @Composable
 fun NotesScreens(
   engine: AccountInterface,
+  newNoteLaunch: Boolean = false,
+  onNewNoteConsumed: () -> Unit = {},
   onSignedOut: () -> Unit,
 ) {
   var place by rememberSaveable { mutableStateOf(NotesPlace.Notes) }
   when (place) {
     NotesPlace.Notes -> AppTheme(Palette.App.Notes) {
-      NotesPage(engine, onOpenSettings = { place = NotesPlace.Settings })
+      NotesPage(
+        engine,
+        onOpenSettings = { place = NotesPlace.Settings },
+        newNoteLaunch = newNoteLaunch,
+        onNewNoteConsumed = onNewNoteConsumed,
+      )
     }
     NotesPlace.Settings -> NotesSettingsScreen(engine, onBack = { place = NotesPlace.Notes }, onSignedOut = onSignedOut)
   }
