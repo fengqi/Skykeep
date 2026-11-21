@@ -1,23 +1,28 @@
 package io.github.yashwanthkamireddi.skykeep.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -116,6 +121,19 @@ fun NotesScreens(
   }
 }
 
+/** 设置页里的一行：左边名字，右边当前值加箭头，点击弹选择。 */
+@Composable
+private fun SettingRow(palette: IosPalette, label: String, value: String, onClick: () -> Unit) {
+  Row(
+    Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+    Text(value, style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
+    Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, tint = palette.secondary, modifier = Modifier.padding(start = 4.dp).size(15.dp))
+  }
+}
+
 @Composable
 private fun NotesSettingsScreen(engine: AccountInterface, onBack: () -> Unit, onSignedOut: () -> Unit) {
   val context = androidx.compose.ui.platform.LocalContext.current
@@ -140,7 +158,73 @@ private fun NotesSettingsScreen(engine: AccountInterface, onBack: () -> Unit, on
       NotSentSection(engine, account)
       Surface(color = palette.card, shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
         Column(Modifier.padding(16.dp)) {
-          Text("关于", style = MaterialTheme.typography.titleMedium)
+          Text("查看", style = MaterialTheme.typography.bodyMedium, color = palette.secondary, modifier = Modifier.padding(top = 24.dp))
+      val noteSort = remember { mutableStateOf(savedSetting(context, "noteSort", "edited")) }
+      val noteGroup = remember { mutableStateOf(savedSetting(context, "noteGroup", "on")) }
+      val noteStart = remember { mutableStateOf(savedSetting(context, "noteStart", "title")) }
+      val checkSort = remember { mutableStateOf(savedSetting(context, "checkSort", "auto")) }
+      var picking by remember { mutableStateOf<Pair<String, String>?>(null) }
+      Surface(color = palette.card, shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Column {
+          SettingRow(
+            palette,
+            "备忘录排序",
+            when (noteSort.value) { "created" -> "创建日期"; "title" -> "标题"; else -> "编辑日期" },
+          ) { picking = "noteSort" to "备忘录排序" }
+          HorizontalDivider(color = palette.separator)
+          Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Text("按日期分组备忘录", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Switch(
+              checked = noteGroup.value == "on",
+              onCheckedChange = { on -> noteGroup.value = if (on) "on" else "off"; saveSetting(context, "noteGroup", if (on) "on" else "off") },
+            )
+          }
+          HorizontalDivider(color = palette.separator)
+          SettingRow(palette, "新备忘录开头", when (noteStart.value) { "heading" -> "小标题"; "subheading" -> "副标题"; "body" -> "正文"; else -> "标题" }) {
+            picking = "noteStart" to "新备忘录开头"
+          }
+          HorizontalDivider(color = palette.separator)
+          SettingRow(palette, "排序已勾选项目", when (checkSort.value) { "manual" -> "手动"; else -> "自动" }) {
+            picking = "checkSort" to "排序已勾选项目"
+          }
+        }
+      }
+      picking?.let { (key, title) ->
+        val current = when (key) {
+          "noteSort" -> noteSort.value; "noteStart" -> noteStart.value; "checkSort" -> checkSort.value; else -> ""
+        }
+        val options = when (key) {
+          "noteSort" -> listOf("edited" to "编辑日期", "created" to "创建日期", "title" to "标题")
+          "noteStart" -> listOf("title" to "标题", "heading" to "小标题", "subheading" to "副标题", "body" to "正文")
+          else -> listOf("auto" to "自动", "manual" to "手动")
+        }
+        AlertDialog(
+          onDismissRequest = { picking = null },
+          containerColor = palette.card,
+          titleContentColor = MaterialTheme.colorScheme.onSurface,
+          textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+          title = { Text(title) },
+          text = {
+            Column {
+              for ((value, label) in options) {
+                Row(
+                  Modifier.fillMaxWidth().clickable { picking = null; saveSetting(context, key, value); (if (key == "noteSort") noteSort else if (key == "noteStart") noteStart else checkSort).value = value }
+                    .padding(vertical = 12.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                  if (value == current) Icon(painterResource(R.drawable.ic_check), contentDescription = "已选", tint = palette.accent, modifier = Modifier.size(18.dp))
+                }
+              }
+            }
+          },
+          confirmButton = {},
+        )
+      }
+      Text("关于", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
           val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() }
           Text(
             "备忘录${version?.let { " $it" } ?: ""} · 基于开源的 Skykeep 引擎（GPL-3.0），与 iCloud 同步。与 Apple 无关。iCloud 与 iPhone 是 Apple Inc. 的商标。",
