@@ -248,24 +248,27 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
       label = "notes-navigation",
       modifier = Modifier.fillMaxSize(),
     ) { p ->
-      when (p) {
-        is NPlace.Open -> NoteEditor(
-          engine, p.guid, p.from.guid, folders,
-          onBack = { place = p.from; generation++ },
-          onProblem = { problem = it },
-        )
-        is NPlace.Folder -> NoteListScreen(
-          engine, p, folders, notes, query, palette,
-          onQuery = { query = it },
-          onBack = { place = NPlace.Folders; query = "" },
-          onOpen = { n -> place = NPlace.Open(n.guid, p) },
-          onNew = { place = NPlace.Open(null, p) },
-          onRename = { renaming = folders.firstOrNull { it.guid == p.guid && !it.trash } },
-          onDelete = { dropping = folders.firstOrNull { it.guid == p.guid && !it.trash } },
-          onGeneration = { generation++ },
-          onProblem = { problem = it },
-        )
-        NPlace.Folders -> if (query.isNotBlank()) {
+      // 转场期间新旧两页同时在场：每页用纵向容器铺上自己的底色，否则两屏会透叠错位。
+      // 各屏（顶栏、标题、列表）本是 Column 的子元素，这里也必须按纵向摆放。
+      Column(Modifier.fillMaxSize().background(palette.bg)) {
+        when (p) {
+          is NPlace.Open -> NoteEditor(
+            engine, p.guid, p.from.guid, folders,
+            onBack = { place = p.from; generation++ },
+            onProblem = { problem = it },
+          )
+          is NPlace.Folder -> NoteListScreen(
+            engine, p, folders, notes, query, palette,
+            onQuery = { query = it },
+            onBack = { place = NPlace.Folders; query = "" },
+            onOpen = { n -> place = NPlace.Open(n.guid, p) },
+            onNew = { place = NPlace.Open(null, p) },
+            onRename = { renaming = folders.firstOrNull { it.guid == p.guid && !it.trash } },
+            onDelete = { dropping = folders.firstOrNull { it.guid == p.guid && !it.trash } },
+            onGeneration = { generation++ },
+            onProblem = { problem = it },
+          )
+          NPlace.Folders -> if (query.isNotBlank()) {
         // 在文件夹页搜索：搜的是所有 iCloud，结果是一个平铺的列表。
         IosBar {
           Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
@@ -292,6 +295,7 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
         onNewFolder = { newFolder = true },
         onSettings = onOpenSettings,
       )
+        }
       }
     }
   }
