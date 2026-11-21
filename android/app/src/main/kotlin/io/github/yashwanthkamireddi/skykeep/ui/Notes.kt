@@ -155,6 +155,9 @@ private fun syncNotes(context: android.content.Context) {
       putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true)
       putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
     })
+    // 设置页的“上次同步”用同一份记录。
+    context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+      .edit().putString("lastSync", (System.currentTimeMillis() / 1000).toString()).apply()
   }
 }
 

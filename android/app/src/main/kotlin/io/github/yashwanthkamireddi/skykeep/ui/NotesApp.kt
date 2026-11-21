@@ -156,9 +156,7 @@ private fun NotesSettingsScreen(engine: AccountInterface, onBack: () -> Unit, on
         Box(Modifier.padding(16.dp)) { AccountRow(engine, account) }
       }
       NotSentSection(engine, account)
-      Surface(color = palette.card, shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
-        Column(Modifier.padding(16.dp)) {
-          Text("查看", style = MaterialTheme.typography.bodyMedium, color = palette.secondary, modifier = Modifier.padding(top = 24.dp))
+      Text("查看", style = MaterialTheme.typography.bodyMedium, color = palette.secondary, modifier = Modifier.padding(top = 24.dp))
       val noteSort = remember { mutableStateOf(savedSetting(context, "noteSort", "edited")) }
       val noteGroup = remember { mutableStateOf(savedSetting(context, "noteGroup", "on")) }
       val noteStart = remember { mutableStateOf(savedSetting(context, "noteStart", "title")) }
@@ -224,11 +222,50 @@ private fun NotesSettingsScreen(engine: AccountInterface, onBack: () -> Unit, on
           confirmButton = {},
         )
       }
-      Text("关于", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
+      Text("关于", style = MaterialTheme.typography.bodyMedium, color = palette.secondary, modifier = Modifier.padding(top = 24.dp))
+      Surface(color = palette.card, shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Column(Modifier.padding(16.dp)) {
           val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() }
           Text(
             "备忘录${version?.let { " $it" } ?: ""} · 基于开源的 Skykeep 引擎（GPL-3.0），与 iCloud 同步。与 Apple 无关。iCloud 与 iPhone 是 Apple Inc. 的商标。",
-            style = MaterialTheme.typography.bodyMedium, color = palette.secondary, modifier = Modifier.padding(top = 6.dp),
+            style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
+          )
+        }
+      }
+      // 同步：手动拉一次，按钮下小字是最近一次发起同步的时间（系统没有公开的上次成功时间）。
+      Text("同步", style = MaterialTheme.typography.bodyMedium, color = palette.secondary, modifier = Modifier.padding(top = 24.dp))
+      Surface(color = palette.card, shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Column(Modifier.padding(16.dp)) {
+          var syncing by remember { mutableStateOf(false) }
+          var lastSync by remember { mutableStateOf(savedSetting(context, "lastSync", "")) }
+          LaunchedEffect(syncing) {
+            if (syncing) { for (i in 1..3) { kotlinx.coroutines.delay(1000); lastSync = savedSetting(context, "lastSync", "") }; syncing = false }
+          }
+          OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !syncing,
+            onClick = {
+              account?.let { a ->
+                syncing = true
+                saveSetting(context, "lastSync", (System.currentTimeMillis() / 1000).toString())
+                lastSync = savedSetting(context, "lastSync", "")
+                android.content.ContentResolver.requestSync(
+                  a, io.github.yashwanthkamireddi.skykeep.sync.NOTES_AUTHORITY,
+                  android.os.Bundle().apply {
+                    putBoolean(android.content.ContentResolver.SYNC_EXTRAS_MANUAL, true)
+                    putBoolean(android.content.ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
+                  },
+                )
+              }
+            },
+          ) { Text(if (syncing) "同步中…" else "立即同步") }
+          Text(
+            "上次同步：" + (lastSync.toLongOrNull()?.let {
+              java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofLocalizedDateTime(java.time.format.FormatStyle.MEDIUM, java.time.format.FormatStyle.SHORT))
+            } ?: "还没有同步过"),
+            style = MaterialTheme.typography.bodySmall, color = palette.secondary,
+            modifier = Modifier.padding(top = 8.dp),
           )
         }
       }
