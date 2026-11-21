@@ -542,13 +542,17 @@ private fun FolderScreen(
       Text("文件夹", style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
         modifier = Modifier.graphicsLayer { alpha = if (collapsed) 1f else 0f })
     }
-    // 右上角依次：新建文件夹（icon）、编辑、设置（直接进设置页），如 iOS；不再用下拉菜单。
+    // 右上角依次：新建文件夹、编辑（排序）、设置（直接进设置页），全部图标，如 iOS 顶栏。
     Row(verticalAlignment = Alignment.CenterVertically) {
       IconButton(onClick = onNewFolder) {
         Icon(painterResource(R.drawable.ic_folder_plus), contentDescription = "新建文件夹", tint = palette.accent)
       }
-      TextButton(onClick = { onEditing(true) }) { Text("编辑", color = palette.accent) }
-      TextButton(onClick = onSettings) { Text("设置", color = palette.accent) }
+      IconButton(onClick = { onEditing(true) }) {
+        Icon(painterResource(R.drawable.ic_reorder), contentDescription = "编辑", tint = palette.accent)
+      }
+      IconButton(onClick = onSettings) {
+        Icon(painterResource(R.drawable.ic_settings), contentDescription = "设置", tint = palette.accent)
+      }
     }
   }
   // 大标题与搜索框随内容滚动：搜索框触顶后停在顶栏下（sticky），如 iOS。
