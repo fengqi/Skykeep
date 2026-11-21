@@ -204,6 +204,8 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
   var dropping by remember { mutableStateOf<NFolder?>(null) }
   // 文件夹页的编辑（排序）模式：菜单“编辑”进入，“完成”退出。
   var editingFolders by rememberSaveable { mutableStateOf(false) }
+  // 列表页的选择模式：FAB 要让位（提升到这层，选择时隐藏）。
+  var selectingNotes by rememberSaveable { mutableStateOf(false) }
 
   fun reason(t: Throwable) = (t as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "无法读取备忘录。"
 
@@ -252,29 +254,30 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
   BackHandler(enabled = editingFolders) { editingFolders = false }
   BackHandler(enabled = !searching && !editingFolders && place is NPlace.Folder) { place = NPlace.Folders; query = "" }
 
-  Column(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding()) {
-    problem?.let { Text(it, color = palette.delete, modifier = Modifier.padding(20.dp, 12.dp)) }
-    // iOS 的推入转场：向深处走时新页从右侧滑入、旧页向左让出三分之一；返回时相反。
-    AnimatedContent(
-      targetState = place,
-      transitionSpec = {
-        val spec = tween<androidx.compose.ui.unit.IntOffset>(300)
-        if (targetState.depth() >= initialState.depth()) {
-          slideInHorizontally(spec) { it } togetherWith slideOutHorizontally(spec) { -it / 3 }
-        } else {
-          slideInHorizontally(spec) { -it / 3 } togetherWith slideOutHorizontally(spec) { it }
-        }
-      },
-      label = "notes-navigation",
-      modifier = Modifier.fillMaxSize(),
-    ) { p ->
-      // 转场期间新旧两页同时在场：每页用纵向容器铺上自己的底色，否则两屏会透叠错位。
-      // 各屏（顶栏、标题、列表）本是 Column 的子元素，这里也必须按纵向摆放。
-      Column(Modifier.fillMaxSize().background(palette.bg)) {
-        when {
-          // 等第一次读取落地再画，冷启动就不会先闪空数据。
-          !ready -> {}
-          else -> when (p) {
+  Box(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding()) {
+    Column(Modifier.fillMaxSize()) {
+      problem?.let { Text(it, color = palette.delete, modifier = Modifier.padding(20.dp, 12.dp)) }
+      // iOS 的推入转场：向深处走时新页从右侧滑入、旧页向左让出三分之一；返回时相反。
+      AnimatedContent(
+        targetState = place,
+        transitionSpec = {
+          val spec = tween<androidx.compose.ui.unit.IntOffset>(300)
+          if (targetState.depth() >= initialState.depth()) {
+            slideInHorizontally(spec) { it } togetherWith slideOutHorizontally(spec) { -it / 3 }
+          } else {
+            slideInHorizontally(spec) { -it / 3 } togetherWith slideOutHorizontally(spec) { it }
+          }
+        },
+        label = "notes-navigation",
+        modifier = Modifier.fillMaxSize(),
+      ) { p ->
+        // 转场期间新旧两页同时在场：每页用纵向容器铺上自己的底色，否则两屏会透叠错位。
+        // 各屏（顶栏、标题、列表）本是 Column 的子元素，这里也必须按纵向摆放。
+        Column(Modifier.fillMaxSize().background(palette.bg)) {
+          when {
+            // 等第一次读取落地再画，冷启动就不会先闪空数据。
+            !ready -> {}
+            else -> when (p) {
           is NPlace.Open -> NoteEditor(
             engine, p.guid, p.from.guid, folders,
             onBack = { place = p.from; generation++ },
@@ -283,6 +286,8 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
           is NPlace.Folder -> NoteListScreen(
             engine, p, folders, notes, query, palette,
             searching = searching,
+            selecting = selectingNotes,
+            onSelecting = { selectingNotes = it },
             onSearchStart = { searching = true },
             onCancelSearch = { cancelSearch() },
             onQuery = { query = it },
@@ -304,13 +309,31 @@ fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
             onOpen = { place = it },
             onOpenNote = { n -> place = NPlace.Open(n.guid, NPlace.Folder(null, "所有 iCloud")) },
             onNewFolder = { newFolder = true },
-            onCreateNote = { place = NPlace.Open(null, NPlace.Folder(DEFAULT_FOLDER, "备忘录")) },
             onSettings = onOpenSettings,
             onDeleteFolder = { f -> dropping = f },
           )
           }
         }
       }
+      }
+    }
+    // 右下角悬浮的新建备忘录：嵌在转场之上，文件夹页与列表页之间不消失；选择/搜索/编辑排序时让位。
+    val cur = place
+    val showFab = ready && !searching && !editingFolders && !selectingNotes && when (cur) {
+      NPlace.Folders -> true
+      is NPlace.Folder -> folders.firstOrNull { it.guid == cur.guid }?.trash != true
+      else -> false
+    }
+    if (showFab) {
+      Fab(
+        onClick = {
+          when (val p = place) {
+            is NPlace.Folder -> place = NPlace.Open(null, p)
+            else -> place = NPlace.Open(null, NPlace.Folder(DEFAULT_FOLDER, "备忘录"))
+          }
+        },
+        palette, Modifier.align(Alignment.BottomEnd),
+      )
     }
   }
   if (newFolder) NameDialog("新建文件夹", "", onDismiss = { newFolder = false }) { name ->
@@ -454,7 +477,6 @@ private fun FolderScreen(
   onOpen: (NPlace.Folder) -> Unit,
   onOpenNote: (NItem) -> Unit,
   onNewFolder: () -> Unit,
-  onCreateNote: () -> Unit,
   onSettings: () -> Unit,
   onDeleteFolder: (NFolder) -> Unit,
 ) {
@@ -641,8 +663,6 @@ private fun FolderScreen(
       }
     }
   }
-    // 右下角悬浮的新建备忘录，如 iOS：在 Apple 的“备忘录”文件夹里开一篇新的。
-    Fab(onCreateNote, palette, Modifier.align(Alignment.BottomEnd))
   }
 }
 
@@ -748,6 +768,8 @@ private fun NoteListScreen(
   onRename: () -> Unit,
   onGeneration: () -> Unit,
   onProblem: (String) -> Unit,
+  selecting: Boolean,
+  onSelecting: (Boolean) -> Unit,
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -759,8 +781,7 @@ private fun NoteListScreen(
   var menu by remember { mutableStateOf(false) }
   var view by rememberSaveable { mutableStateOf("list") }
   var chosen by remember { mutableStateOf<NItem?>(null) }
-  // 选择模式：⋯ 菜单进入，行前出现圆圈，底部是移动与删除，“完成”退出。
-  var selecting by rememberSaveable { mutableStateOf(false) }
+  // 选择模式的状态在这层（NotesPage）：FAB 要跟着让位。
   var selected by rememberSaveable(stateSaver = StringSetSaver) { mutableStateOf<Set<String>>(emptySet()) }
   var moving by remember { mutableStateOf(false) }
   val listState = rememberLazyListState()
@@ -773,7 +794,7 @@ private fun NoteListScreen(
       .onFailure { onProblem((it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。") }
     syncNotes(context); onGeneration()
   }
-  BackHandler(enabled = selecting) { selecting = false; selected = emptySet() }
+  BackHandler(enabled = selecting) { onSelecting(false); selected = emptySet() }
 
   if (searching) {
     // 搜索模式：顶栏与大标题都消失，搜索框上移，右侧是取消；输入后才出现结果。
@@ -796,7 +817,7 @@ private fun NoteListScreen(
       Spacer(Modifier.weight(1f))
       Text("${selected.size}", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
       Spacer(Modifier.weight(1f))
-      TextButton(onClick = { selecting = false; selected = emptySet() }) { Text("完成", color = palette.accent) }
+      TextButton(onClick = { onSelecting(false); selected = emptySet() }) { Text("完成", color = palette.accent) }
     }
     Box(Modifier.fillMaxSize()) {
       NoteList(
@@ -814,7 +835,7 @@ private fun NoteListScreen(
           }
           Spacer(Modifier.weight(1f))
           IconButton(enabled = selected.isNotEmpty(), onClick = {
-            val pick = selected; selecting = false; selected = emptySet()
+            val pick = selected; onSelecting(false); selected = emptySet()
             scope.launch {
               for (g in pick) {
                 runCatching { withContext(Dispatchers.IO) { engine.noteDelete(g) } }
@@ -853,7 +874,7 @@ private fun NoteListScreen(
             text = { Text(if (view == "list") "画廊视图" else "列表视图") },
             onClick = { menu = false; view = if (view == "list") "gallery" else "list" },
           )
-          if (!trash) DropdownMenuItem(text = { Text("选择备忘录") }, onClick = { menu = false; selected = emptySet(); selecting = true })
+          if (!trash) DropdownMenuItem(text = { Text("选择备忘录") }, onClick = { menu = false; selected = emptySet(); onSelecting(true) })
           if (own) DropdownMenuItem(text = { Text("重新命名文件夹") }, onClick = { menu = false; onRename() })
         }
       }
@@ -878,10 +899,8 @@ private fun NoteListScreen(
         } else {
           Gallery(notes, palette, onOpen = onOpen, onChoose = { chosen = it })
         }
-        if (!trash) Fab(onNew, palette, Modifier.align(Alignment.BottomEnd))
       }
     } else {
-      Box(Modifier.fillMaxSize()) {
       // 列表：大标题与搜索框随内容滚动，搜索框触顶后停在顶栏下（sticky），如 iOS。
       LazyColumn(
         state = listState, modifier = Modifier.fillMaxSize(),
@@ -926,8 +945,6 @@ private fun NoteListScreen(
           }
         }
       }
-        if (!trash) Fab(onNew, palette, Modifier.align(Alignment.BottomEnd))
-      }
     }
   }
   chosen?.let { n ->
@@ -941,7 +958,7 @@ private fun NoteListScreen(
   if (moving && selected.isNotEmpty()) {
     MoveDialog(folders, folder.guid, palette, onDismiss = { moving = false }) { to ->
       moving = false
-      val pick = selected; selecting = false; selected = emptySet()
+      val pick = selected; onSelecting(false); selected = emptySet()
       scope.launch {
         for (g in pick) {
           runCatching { withContext(Dispatchers.IO) { engine.noteMove(g, to) } }
