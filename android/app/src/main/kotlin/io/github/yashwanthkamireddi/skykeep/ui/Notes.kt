@@ -1303,10 +1303,7 @@ private fun NoteEditor(
           d,
           engine,
           listState,
-          // 点行与行之间的空隙时兜底：光标落在文末。
-          Modifier.fillMaxSize().clickable(enabled = d.editable && !trashed) {
-            text = TextFieldValue(d.text, TextRange(d.text.length)); saved = d.text; editing = true
-          },
+          Modifier.fillMaxSize(),
           // 点正文哪一行，就落到哪个字上进入修改。
           onPlace = { off ->
             text = TextFieldValue(d.text, TextRange(off)); saved = d.text; editing = true
