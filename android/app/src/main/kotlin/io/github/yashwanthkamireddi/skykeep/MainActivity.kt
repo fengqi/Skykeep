@@ -20,9 +20,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.github.yashwanthkamireddi.skykeep.sync.SessionEnded
 import io.github.yashwanthkamireddi.skykeep.ui.NotesScreens
-import io.github.yashwanthkamireddi.skykeep.ui.Setup
+import io.github.yashwanthkamireddi.skykeep.ui.NotesSetup
 import io.github.yashwanthkamireddi.skykeep.ui.Welcome
-import io.github.yashwanthkamireddi.skykeep.ui.allowed
 import io.github.yashwanthkamireddi.skykeep.ui.phoneAccount
 import io.github.yashwanthkamireddi.skykeep.ui.theme.SkykeepTheme
 import io.github.yashwanthkamireddi.skykeep.widgets.WidgetIntents
@@ -73,8 +72,9 @@ class MainActivity : ComponentActivity() {
             stage = when {
               !kept -> if (welcomed(applicationContext)) Stage.SignIn else Stage.Welcome
               signInAsked -> Stage.SignIn
-              // Signed in, but the phone not set up yet (no account here, or no access).
-              phoneAccount(applicationContext) == null || !allowed(applicationContext) -> Stage.Setup
+              // notes-ios fork: Notes alone — no Contacts or Calendar access is asked for or
+              // needed. Setup only makes the phone account and starts Notes' first sync.
+              phoneAccount(applicationContext) == null -> Stage.Setup
               else -> Stage.Main
             }
             if (kept) {
@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
               SessionEnded.clear(applicationContext)
               stage = Stage.Setup
             }
-            Stage.Setup -> Setup {
+            Stage.Setup -> NotesSetup(engine!!) {
               WidgetUpdates.scheduleAll(applicationContext)
               stage = Stage.Main
             }
