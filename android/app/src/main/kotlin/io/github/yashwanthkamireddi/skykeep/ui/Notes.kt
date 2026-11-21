@@ -19,8 +19,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -45,9 +43,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.layout.aspectRatio
@@ -1241,10 +1241,23 @@ private fun NoteEditor(
     }
   }
   Column(Modifier.fillMaxSize().imePadding()) {
-    // When it last changed: hidden by default, shown only while pulling down at the top
-    // (like iOS' preview), gone again the moment the pull ends or a scroll goes up.
+    // 日期只在顶部往下拉时露出：拉过头（overscroll）的剩余量会从 onPostScroll 送到这里；
+    // 一往上滚（onPreScroll）就收起；停手也收起。没有涟漪——正文不像按钮。
     var showDate by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val dateScroll = remember {
+      object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+        override fun onPreScroll(available: Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): Offset {
+          if (available.y < -4f) showDate = false
+          return Offset.Zero
+        }
+        override fun onPostScroll(consumed: Offset, available: Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): Offset {
+          if (available.y > 4f) showDate = true
+          return Offset.Zero
+        }
+      }
+    }
+    LaunchedEffect(listState.isScrollInProgress) { if (!listState.isScrollInProgress) showDate = false }
     AnimatedVisibility(
       visible = showDate && d.modifiedAt != null,
       enter = fadeIn(tween(120)) + expandVertically(tween(120)),
@@ -1258,27 +1271,15 @@ private fun NoteEditor(
         modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp), textAlign = TextAlign.Center,
       )
     }
-    // 在顶部往下拉（橡皮筋）露日期；往上拉或松手收起。
     Box(
-      Modifier.fillMaxSize().pointerInput(Unit) {
-        awaitEachGesture {
-          awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-          var prevY = Float.NaN
-          while (true) {
-            val e = awaitPointerEvent(PointerEventPass.Initial)
-            val c = e.changes.firstOrNull() ?: break
-            if (!c.pressed) break
-            if (!prevY.isNaN()) {
-              val dy = c.position.y - prevY
-              val top = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-              if (dy > 4f && top) showDate = true
-              else if (dy < -4f) showDate = false
-            }
-            prevY = c.position.y
+      Modifier.fillMaxSize()
+        .nestedScroll(dateScroll)
+        .pointerInput(d.editable, trashed) {
+          // 点行与行之间的空隙时兜底：光标落在文末。
+          detectTapGestures {
+            if (d.editable && !trashed) { text = TextFieldValue(d.text, TextRange(d.text.length)); saved = d.text; editing = true }
           }
-          showDate = false
-        }
-      },
+        },
     ) {
       when {
         d.locked -> Text(
@@ -1448,11 +1449,14 @@ private fun NoteLineView(l: NoteLine, engine: AccountInterface, onPlace: (Int) -
       103 -> {
         // Notes' checklist circle: hollow, or filled yellow with a check.
         val ticked = para.checked == true
+        val circleInteraction = remember { MutableInteractionSource() }
         Box(
           Modifier.padding(top = 3.dp, end = 10.dp).size(20.dp)
             .border(1.75.dp, if (ticked) palette.accent else palette.secondary, androidx.compose.foundation.shape.CircleShape)
             .background(if (ticked) palette.accent else Color.Transparent, androidx.compose.foundation.shape.CircleShape)
-            .toggleable(ticked, role = Role.Checkbox) { onCheck(l.start.toUInt(), it) },
+            .toggleable(
+              ticked, interactionSource = circleInteraction, indication = null, role = Role.Checkbox,
+            ) { onCheck(l.start.toUInt(), it) },
           contentAlignment = Alignment.Center,
         ) { if (ticked) Icon(painterResource(R.drawable.ic_check), contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp)) }
       }
