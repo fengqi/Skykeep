@@ -14,6 +14,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenu
@@ -32,6 +33,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
@@ -61,11 +63,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -535,24 +534,45 @@ private fun FolderScreen(
       if (r.fixed || folder == null) {
         FolderRowView(r, palette) { onOpen(r.place) }
       } else {
-        // 自建文件夹左滑删除（红底垃圾桶，如 iOS）；确认后进“最近删除”。
-        val dismiss = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
-          if (v == SwipeToDismissBoxValue.EndToStart) onDeleteFolder(folder)
-          false
-        })
-        SwipeToDismissBox(
-          dismiss,
-          enableDismissFromStartToEnd = false,
-          backgroundContent = {
-            Box(Modifier.fillMaxSize().background(palette.delete)) {
-              Icon(painterResource(R.drawable.ic_trash), contentDescription = "删除",
-                tint = Color.White, modifier = Modifier.align(Alignment.CenterEnd).padding(end = 20.dp).size(20.dp))
+        // iOS 的左滑：滑出一截停下，露出“移动”与“删除”两个按钮。移动要子文件夹（引擎
+        // 还没暴露），先置灰；点删除弹确认，进“最近删除”。
+        var reveal by remember(r.place.guid) { mutableStateOf(false) }
+        var dragging by remember { mutableStateOf(false) }
+        var dragX by remember { mutableFloatStateOf(0f) }
+        val actionPx = with(LocalDensity.current) { 72.dp.toPx() }
+        val revealPx = actionPx * 2
+        val shown = if (dragging) dragX else if (reveal) revealPx else 0f
+        val dimBg = if (isSystemInDarkTheme()) Color(0xFF48484A) else Color(0xFFD1D1D6)
+        Box(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
+          Row(
+            Modifier.align(Alignment.CenterEnd)
+              .width(with(LocalDensity.current) { revealPx.toDp() }).fillMaxHeight(),
+          ) {
+            FolderSwipeAction(R.drawable.ic_folder, "移动", dimBg, palette.secondary, enabled = false, onClick = {})
+            FolderSwipeAction(R.drawable.ic_trash, "删除", palette.delete, Color.White) {
+              reveal = false
+              onDeleteFolder(folder)
             }
-          },
-        ) {
-          // 行内容要自己铺上卡片色，否则滑动的红底会一直透出来。
-          Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-            FolderRowView(r, palette) { onOpen(r.place) }
+          }
+          Row(
+            Modifier.fillMaxWidth()
+              .graphicsLayer { translationX = -shown }
+              .background(MaterialTheme.colorScheme.surfaceContainer)
+              .pointerInput(r.place.guid) {
+                detectHorizontalDragGestures(
+                  onDragStart = { dragging = true; dragX = if (reveal) revealPx else 0f },
+                  onHorizontalDrag = { change, amount ->
+                    change.consume()
+                    dragX = (dragX - amount).coerceIn(0f, revealPx)
+                  },
+                  onDragEnd = { dragging = false; reveal = dragX > revealPx / 2 },
+                  onDragCancel = { dragging = false; reveal = dragX > revealPx / 2 },
+                )
+              }
+              .clickable { if (reveal) reveal = false else onOpen(r.place) },
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            FolderRowView(r, palette, onClick = null)
           }
         }
       }
@@ -882,6 +902,18 @@ private fun Fab(onNew: () -> Unit, palette: IosPalette, modifier: Modifier = Mod
     Box(contentAlignment = Alignment.Center) {
       Icon(painterResource(R.drawable.ic_edit), contentDescription = "新备忘录", tint = palette.accent, modifier = Modifier.size(24.dp))
     }
+  }
+}
+
+/** 文件夹左滑露出的一个动作按钮：整块底色、中间图标，如 iOS（“移动”暂置灰不可点）。 */
+@Composable
+private fun FolderSwipeAction(icon: Int, label: String, bg: Color, tint: Color, enabled: Boolean = true, onClick: () -> Unit = {}) {
+  Box(
+    Modifier.width(72.dp).fillMaxHeight().background(bg)
+      .clickable(enabled = enabled) { onClick() },
+    contentAlignment = Alignment.Center,
+  ) {
+    Icon(painterResource(icon), contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
   }
 }
 
