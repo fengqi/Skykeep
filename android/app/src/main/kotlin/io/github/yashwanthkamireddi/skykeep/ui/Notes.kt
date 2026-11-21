@@ -6,9 +6,15 @@ import io.github.yashwanthkamireddi.skykeep.ui.theme.Palette
 import android.content.ContentResolver
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.text.style.TextAlign
@@ -20,16 +26,22 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,7 +51,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -81,7 +93,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import uniffi.quince_mobile.Account
 import uniffi.quince_mobile.AccountInterface
 import uniffi.quince_mobile.NDoc
 import uniffi.quince_mobile.NAttachment
@@ -93,8 +104,24 @@ import uniffi.quince_mobile.NSpan
 /** Apple's id for Recently Deleted (quince-core's TRASH_FOLDER). */
 private const val TRASH = "TrashFolder-CloudKit"
 
-/** Notes' own yellow, as the iCloud Notes app has it. */
-private val NotesYellow = Color(Palette.NOTES)
+/**
+ * iOS 备忘录的一组颜色：浅色是分组背景 #F2F2F7 上的白卡片，深色是纯黑上的 #1C1C1E；主题色用
+ * Notes 的黄（与上游 Palette.App.Notes 一致），删除用 iOS 红。
+ */
+internal data class IosPalette(val bg: Color, val card: Color, val secondary: Color, val separator: Color, val accent: Color, val delete: Color)
+
+@Composable
+internal fun iosPalette(): IosPalette {
+  val dark = isSystemInDarkTheme()
+  return IosPalette(
+    bg = if (dark) Color(0xFF000000) else Color(0xFFF2F2F7),
+    card = if (dark) Color(0xFF1C1C1E) else Color(0xFFFFFFFF),
+    secondary = if (dark) Color(0xFF98989F) else Color(0xFF8A8A8E),
+    separator = if (dark) Color(0xFF38383A) else Color(0xFFE3E3E8),
+    accent = Color(if (dark) Palette.App.Notes.dark else Palette.App.Notes.light),
+    delete = if (dark) Color(0xFFFF453A) else Color(0xFFFF3B30),
+  )
+}
 
 private fun syncNotes(context: android.content.Context) {
   phoneAccount(context)?.let {
@@ -132,14 +159,14 @@ private sealed interface NPlace {
 }
 
 /**
- * Notes, read from the phone's library: the folders with their counts, a folder's notes (pinned
- * first, then the latest), search, and a note open to read and edit. Every change shows at once
- * and is sent behind; a note's formatting is kept by the engine whatever is typed.
+ * 备忘录。布局复刻 iOS 备忘录：文件夹页、笔记列表（置顶与时间分组、滑动置顶与删除、长按菜单、
+ * 列表与画廊两种视图）、可读可写的编辑页。每次改动立刻上屏，后台发往 iCloud；格式由引擎保全。
  */
 @Composable
-fun NotesPage(engine: AccountInterface) {
+fun NotesPage(engine: AccountInterface, onOpenSettings: () -> Unit = {}) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
+  val palette = iosPalette()
   var place by rememberSaveable(stateSaver = NPlaceSaver) { mutableStateOf<NPlace>(NPlace.Folders) }
   var folders by remember { mutableStateOf<List<NFolder>>(emptyList()) }
   var notes by remember { mutableStateOf<List<NItem>>(emptyList()) }
@@ -150,7 +177,7 @@ fun NotesPage(engine: AccountInterface) {
   var renaming by remember { mutableStateOf<NFolder?>(null) }
   var dropping by remember { mutableStateOf<NFolder?>(null) }
 
-  fun reason(t: Throwable) = (t as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "Notes couldn't be read."
+  fun reason(t: Throwable) = (t as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "无法读取备忘录。"
 
   // The read in flight: a new one cancels it, so a search typed fast never shows an older
   // query's answer arriving after a newer one's.
@@ -180,7 +207,8 @@ fun NotesPage(engine: AccountInterface) {
 
   /** A folder made, renamed or deleted at Apple, then everything read again. */
   fun folderChange(what: String, write: () -> Unit) = scope.launch {
-    runCatching { withContext(Dispatchers.IO) { write() } }.onFailure { problem = (it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "$what didn't reach iCloud." }
+    runCatching { withContext(Dispatchers.IO) { write() } }
+      .onFailure { problem = (it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。" }
     generation++
   }
 
@@ -190,116 +218,188 @@ fun NotesPage(engine: AccountInterface) {
     onDispose { stop() }
   }
   LaunchedEffect(place, query, generation) { reload() }
-  // Back from a folder returns to the folders (the open note handles its own back: it saves).
+  // Back goes up one level: an open folder to the folders, search results to where they began;
+  // an open note handles its own back (it saves).
   BackHandler(enabled = place is NPlace.Folder) { place = NPlace.Folders; query = "" }
+  BackHandler(enabled = place is NPlace.Folders && query.isNotBlank()) { query = "" }
 
-  Column(Modifier.fillMaxSize()) {
-    problem?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(20.dp, 12.dp)) }
+  /** 置顶或删除一篇搜索结果里的备忘录，然后刷新。 */
+  fun searchAct(n: NItem, write: () -> Unit) = scope.launch {
+    runCatching { withContext(Dispatchers.IO) { write() } }
+      .onFailure { problem = (it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。" }
+    syncNotes(context); generation++
+  }
+
+  Column(Modifier.fillMaxSize().background(palette.bg).statusBarsPadding()) {
+    problem?.let { Text(it, color = palette.delete, modifier = Modifier.padding(20.dp, 12.dp)) }
     when (val p = place) {
-      is NPlace.Open -> NoteScreen(engine, p.guid, p.from.guid, folders, onBack = { place = p.from; generation++ }, onProblem = { problem = it })
-      else -> {
-        val folder = p as? NPlace.Folder
-        val trash = folder != null && folders.firstOrNull { it.guid == folder.guid }?.trash == true
-        Row(Modifier.padding(start = 4.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-          if (folder != null) IconButton(onClick = { place = NPlace.Folders; query = "" }) { Icon(painterResource(R.drawable.ic_back), contentDescription = "Folders") }
-          Spacer(Modifier.weight(1f))
-          if (folder != null && !trash) {
-            // Nothing is made yet: a new note is made in iCloud when something is typed in it,
-            // so one opened and left empty leaves nothing behind, as in Notes.
-            IconButton(onClick = { place = NPlace.Open(null, folder) }) {
-              Icon(painterResource(R.drawable.ic_edit), contentDescription = "New Note", tint = MaterialTheme.colorScheme.primary)
+      is NPlace.Open -> NoteEditor(
+        engine, p.guid, p.from.guid, folders,
+        onBack = { place = p.from; generation++ },
+        onProblem = { problem = it },
+      )
+      is NPlace.Folder -> NoteListScreen(
+        engine, p, folders, notes, query, palette,
+        onQuery = { query = it },
+        onBack = { place = NPlace.Folders; query = "" },
+        onOpen = { n -> place = NPlace.Open(n.guid, p) },
+        onNew = { place = NPlace.Open(null, p) },
+        onRename = { renaming = folders.firstOrNull { it.guid == p.guid && !it.trash } },
+        onDelete = { dropping = folders.firstOrNull { it.guid == p.guid && !it.trash } },
+        onGeneration = { generation++ },
+        onProblem = { problem = it },
+      )
+      NPlace.Folders -> if (query.isNotBlank()) {
+        // 在文件夹页搜索：搜的是所有 iCloud，结果是一个平铺的列表。
+        IosBar {
+          Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { query = "" }) {
+              Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent)
             }
-          }
-          // A folder of the person's own (not All iCloud, Notes' own, or Recently Deleted): Rename, Delete.
-          val own = folders.firstOrNull { it.guid == folder?.guid && !it.trash }
-          if (own != null) {
-            var menu by remember { mutableStateOf(false) }
-            Box {
-              IconButton(onClick = { menu = true }) { Icon(painterResource(R.drawable.ic_more), contentDescription = "Folder options") }
-              DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("Rename Folder") }, onClick = { menu = false; renaming = own })
-                DropdownMenuItem(text = { Text("Delete Folder", color = MaterialTheme.colorScheme.error) }, onClick = { menu = false; dropping = own })
-              }
-            }
+            Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent)
           }
         }
         Column(Modifier.padding(horizontal = 20.dp)) {
-          Text(folder?.title ?: "Notes", style = MaterialTheme.typography.headlineLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-          if (folder != null && query.isBlank()) {
-            Text(if (notes.size == 1) "1 note" else "${notes.size} notes", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-          }
+          Text("搜索", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold))
+          Text("${notes.size} 个搜索结果", style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
+          IosSearch(query, { query = it }, palette, Modifier.padding(top = 8.dp, bottom = 4.dp))
         }
-        SearchPill(query, { query = it }, Modifier.padding(horizontal = 16.dp, vertical = 12.dp), cursor = MaterialTheme.colorScheme.primary)
-        if (folder == null && query.isBlank()) {
-          FolderList(folders, onNewFolder = { newFolder = true }) { place = it }
+        if (notes.isEmpty()) {
+          Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有找到备忘录", color = palette.secondary) }
         } else {
-          NoteList(notes, grouped = query.isBlank()) { n -> place = NPlace.Open(n.guid, folder ?: NPlace.Folder(null, "All iCloud")) }
+          NoteList(notes, grouped = false, palette, onOpen = { n -> place = NPlace.Open(n.guid, NPlace.Folder(null, "所有 iCloud")) }, onChoose = {}, onPin = { n -> searchAct(n) { engine.notePin(n.guid, !n.pinned) } }, onRemove = { n -> searchAct(n) { engine.noteDelete(n.guid) } })
         }
-      }
+      } else FolderScreen(
+        folders, query, palette,
+        onQuery = { query = it },
+        onOpen = { place = it },
+        onNewFolder = { newFolder = true },
+        onSettings = onOpenSettings,
+      )
     }
   }
-  if (newFolder) NameDialog("New Folder", "", onDismiss = { newFolder = false }) { name ->
+  if (newFolder) NameDialog("新建文件夹", "", onDismiss = { newFolder = false }) { name ->
     newFolder = false
-    folderChange("Making $name") { engine.noteFolderCreate(name) }
+    folderChange(name) { engine.noteFolderCreate(name) }
   }
   renaming?.let { f ->
-    NameDialog("Rename Folder", f.title, onDismiss = { renaming = null }) { name ->
+    NameDialog("重新命名", f.title, onDismiss = { renaming = null }) { name ->
       renaming = null
       if (name != f.title) {
-        place = NPlace.Folder(f.guid, name)
-        folderChange("Renaming ${f.title}") { engine.noteFolderRename(f.guid, name) }
+        if (place is NPlace.Folder) place = NPlace.Folder(f.guid, name)
+        folderChange(name) { engine.noteFolderRename(f.guid, name) }
       }
     }
   }
   dropping?.let { f ->
     AlertDialog(
       onDismissRequest = { dropping = null },
-      title = { Text("Delete “${f.title}”?") },
-      text = { Text("Its notes move to Recently Deleted on all your devices, where they stay for 30 days.") },
+      containerColor = palette.card,
+      titleContentColor = MaterialTheme.colorScheme.onSurface,
+      textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+      title = { Text("要删除“${f.title}”吗？") },
+      text = { Text("这个文件夹里的所有备忘录会在你的所有设备上移到“最近删除”，并保留 30 天。") },
       confirmButton = {
         TextButton(onClick = {
           dropping = null; place = NPlace.Folders
-          folderChange("Deleting ${f.title}") { engine.noteFolderDelete(f.guid) }
-        }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+          folderChange(f.title) { engine.noteFolderDelete(f.guid) }
+        }) { Text("删除文件夹", color = palette.delete) }
       },
-      dismissButton = { TextButton(onClick = { dropping = null }) { Text("Cancel") } },
+      dismissButton = { TextButton(onClick = { dropping = null }) { Text("取消", color = palette.accent) } },
     )
   }
 }
 
-/** The folders, as the desktop's sidebar lists them: All iCloud, each folder, Recently Deleted. */
+/** iOS 顶栏的一行：内容左右排开。 */
 @Composable
-private fun FolderList(folders: List<NFolder>, onNewFolder: () -> Unit, open: (NPlace.Folder) -> Unit) {
+internal fun IosBar(content: @Composable RowScope.() -> Unit) {
+  Row(
+    Modifier.fillMaxWidth().padding(start = 6.dp, end = 10.dp, top = 6.dp, bottom = 2.dp).height(44.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    content = content,
+  )
+}
+
+/** The folders, as iOS lists them: All iCloud, each folder, Recently Deleted, one white card. */
+@Composable
+private fun FolderScreen(
+  folders: List<NFolder>,
+  query: String,
+  palette: IosPalette,
+  onQuery: (String) -> Unit,
+  onOpen: (NPlace.Folder) -> Unit,
+  onNewFolder: () -> Unit,
+  onSettings: () -> Unit,
+) {
+  var menu by remember { mutableStateOf(false) }
+  IosBar {
+    Spacer(Modifier.weight(1f))
+    Box {
+      IconButton(onClick = { menu = true }) {
+        Icon(painterResource(R.drawable.ic_more), contentDescription = "更多", tint = palette.accent)
+      }
+      DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
+        DropdownMenuItem(text = { Text("设置") }, onClick = { menu = false; onSettings() })
+      }
+    }
+  }
+  Column(Modifier.padding(horizontal = 20.dp)) {
+    Text("文件夹", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold))
+    IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp))
+  }
   val all = folders.filter { !it.trash }.sumOf { it.count.toInt() }
   data class Row(val title: String, val count: Int, val icon: Int, val place: NPlace.Folder)
   val rows = buildList {
-    add(Row("All iCloud", all, R.drawable.ic_folder, NPlace.Folder(null, "All iCloud")))
+    add(Row("所有 iCloud", all, R.drawable.ic_folder, NPlace.Folder(null, "所有 iCloud")))
     // Apple's own "Notes" folder is the one with no folder: notes not filed anywhere.
     folders.filter { !it.trash }.forEach { add(Row(it.title, it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, it.title))) }
-    folders.firstOrNull { it.trash }?.let { add(Row("Recently Deleted", it.count.toInt(), R.drawable.ic_trash, NPlace.Folder(it.guid, "Recently Deleted"))) }
+    folders.firstOrNull { it.trash }?.let { add(Row("最近删除", it.count.toInt(), R.drawable.ic_trash, NPlace.Folder(it.guid, "最近删除"))) }
   }
-  LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
-    item {
-      GroupCard(rows, inset = 54) { r ->
-        androidx.compose.foundation.layout.Row(
-          Modifier.fillMaxWidth().clickable { open(r.place) }.padding(horizontal = 16.dp, vertical = 14.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Icon(painterResource(r.icon), contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
-          Spacer(Modifier.width(16.dp))
-          Text(r.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-          Text("${r.count}", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-          Spacer(Modifier.width(6.dp))
-          Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-        }
+  LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp)) {
+    groupItems(rows, key = { it.title }, inset = 54) { r ->
+      Row(
+        Modifier.fillMaxWidth().clickable { onOpen(r.place) }.padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Icon(painterResource(r.icon), contentDescription = null, tint = palette.accent, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(r.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("${r.count}", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
+        Spacer(Modifier.width(6.dp))
+        Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(16.dp))
       }
     }
     item {
-      TextButton(onClick = onNewFolder, modifier = Modifier.padding(top = 8.dp)) {
-        Icon(painterResource(R.drawable.ic_folder_plus), contentDescription = null, modifier = Modifier.size(18.dp))
+      TextButton(onClick = onNewFolder, modifier = Modifier.padding(top = 8.dp, start = 2.dp)) {
+        Icon(painterResource(R.drawable.ic_folder_plus), contentDescription = null, tint = palette.accent, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text("New Folder")
+        Text("新建文件夹", color = palette.accent)
       }
+    }
+  }
+}
+
+/** iOS 的搜索框：圆角灰底，占位“搜索”。 */
+@Composable
+private fun IosSearch(value: String, onChange: (String) -> Unit, palette: IosPalette, modifier: Modifier = Modifier) {
+  Surface(
+    color = if (isSystemInDarkTheme()) Color(0xFF1C1C1E) else Color(0xFFE3E3E9),
+    shape = RoundedCornerShape(10.dp),
+    modifier = modifier.fillMaxWidth(),
+  ) {
+    Row(Modifier.padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+      Icon(painterResource(R.drawable.ic_search), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(17.dp))
+      Spacer(Modifier.width(8.dp))
+      BasicTextField(
+        value = value, onValueChange = onChange, singleLine = true,
+        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+        cursorBrush = SolidColor(palette.accent),
+        modifier = Modifier.weight(1f),
+        decorationBox = { field ->
+          if (value.isEmpty()) Text("搜索", style = MaterialTheme.typography.bodyLarge, color = palette.secondary)
+          field()
+        },
+      )
     }
   }
 }
@@ -307,7 +407,7 @@ private fun FolderList(folders: List<NFolder>, onNewFolder: () -> Unit, open: (N
 private val dayFormat: DateTimeFormatter = DateTimeFormatter.ofLocalizedDate(FormatStyle.SHORT)
 private val timeFormat: DateTimeFormatter = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
 
-/** When a note was changed, as Notes says it: the time today, Yesterday, the weekday this week, else the date. */
+/** When a note was changed, as Notes says it: the time today, 昨天, the weekday this week, else the date. */
 private fun changed(at: Long?): String {
   at ?: return ""
   val z = Instant.ofEpochSecond(at).atZone(ZoneId.systemDefault())
@@ -315,7 +415,7 @@ private fun changed(at: Long?): String {
   val d = z.toLocalDate()
   return when {
     d == today -> z.toLocalTime().format(timeFormat)
-    d == today.minusDays(1) -> "Yesterday"
+    d == today.minusDays(1) -> "昨天"
     d.isAfter(today.minusDays(7)) -> d.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
     else -> d.format(dayFormat)
   }
@@ -323,44 +423,228 @@ private fun changed(at: Long?): String {
 
 /** Which section a note's last change puts it in, as Notes groups them. */
 private fun bucket(n: NItem, today: LocalDate): String {
-  if (n.pinned) return "Pinned"
-  val d = n.modifiedAt?.let { Instant.ofEpochSecond(it).atZone(ZoneId.systemDefault()).toLocalDate() } ?: return "Earlier"
+  if (n.pinned) return "置顶"
+  val d = n.modifiedAt?.let { Instant.ofEpochSecond(it).atZone(ZoneId.systemDefault()).toLocalDate() } ?: return "更早"
   return when {
-    d == today -> "Today"
-    d == today.minusDays(1) -> "Yesterday"
-    d.isAfter(today.minusDays(7)) -> "Previous 7 Days"
-    d.isAfter(today.minusDays(30)) -> "Previous 30 Days"
+    d == today -> "今天"
+    d == today.minusDays(1) -> "昨天"
+    d.isAfter(today.minusDays(7)) -> "前 7 天"
+    d.isAfter(today.minusDays(30)) -> "前 30 天"
     d.year == today.year -> d.month.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
     else -> d.year.toString()
   }
 }
 
-/**
- * Notes as the desktop lists them: grouped by when they changed (Pinned first), each section one
- * card, each note its title in bold over its time and first line. Search results are one list.
- */
+/** One folder's notes, as iOS lists or shows them in the gallery. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun NoteList(notes: List<NItem>, grouped: Boolean, open: (NItem) -> Unit) {
+private fun NoteListScreen(
+  engine: AccountInterface,
+  folder: NPlace.Folder,
+  folders: List<NFolder>,
+  notes: List<NItem>,
+  query: String,
+  palette: IosPalette,
+  onQuery: (String) -> Unit,
+  onBack: () -> Unit,
+  onOpen: (NItem) -> Unit,
+  onNew: () -> Unit,
+  onRename: () -> Unit,
+  onDelete: () -> Unit,
+  onGeneration: () -> Unit,
+  onProblem: (String) -> Unit,
+) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  val trash = folders.firstOrNull { it.guid == folder.guid }?.trash == true
+  val own = folders.firstOrNull { it.guid == folder.guid && !it.trash } != null
+  var menu by remember { mutableStateOf(false) }
+  var view by rememberSaveable { mutableStateOf("list") }
+  var chosen by remember { mutableStateOf<NItem?>(null) }
+
+  fun act(n: NItem, write: () -> Unit) = scope.launch {
+    runCatching { withContext(Dispatchers.IO) { write() } }.onFailure { onProblem((it as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "没有送到 iCloud，稍后会再试。") }
+    syncNotes(context); onGeneration()
+  }
+  fun remove(n: NItem) = act(n) { engine.noteDelete(n.guid) }
+  fun pin(n: NItem) = act(n) { engine.notePin(n.guid, !n.pinned) }
+
+  IosBar {
+    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+      IconButton(onClick = onBack) {
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent)
+      }
+      Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent)
+    }
+    if (!trash && query.isBlank()) {
+      IconButton(onClick = onNew) {
+        Icon(painterResource(R.drawable.ic_edit), contentDescription = "新备忘录", tint = palette.accent)
+      }
+    }
+    Box {
+      IconButton(onClick = { menu = true }) {
+        Icon(painterResource(R.drawable.ic_more), contentDescription = "更多", tint = palette.accent)
+      }
+      DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
+        if (!trash && query.isBlank()) DropdownMenuItem(
+          text = { Text(if (view == "list") "画廊视图" else "列表视图") },
+          onClick = { menu = false; view = if (view == "list") "gallery" else "list" },
+        )
+        if (own) {
+          DropdownMenuItem(text = { Text("重新命名文件夹") }, onClick = { menu = false; onRename() })
+          DropdownMenuItem(text = { Text("删除文件夹", color = palette.delete) }, onClick = { menu = false; onDelete() })
+        }
+      }
+    }
+  }
+  Column(Modifier.padding(horizontal = 20.dp)) {
+    Text(folder.title, style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Text(
+      when {
+        query.isNotBlank() -> "${notes.size} 个搜索结果"
+        notes.size == 1 -> "1 个备忘录"
+        notes.isEmpty() -> "没有备忘录"
+        else -> "${notes.size} 个备忘录"
+      },
+      style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
+    )
+    IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp, bottom = 4.dp))
+  }
+  if (notes.isEmpty()) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+      Text(if (query.isBlank()) "没有备忘录" else "没有找到备忘录", color = palette.secondary)
+    }
+  } else if (view == "gallery" && query.isBlank()) {
+    Gallery(notes, palette, onOpen = onOpen, onChoose = { chosen = it })
+  } else {
+    NoteList(notes, grouped = query.isBlank(), palette, pinnable = !trash, onOpen = onOpen, onChoose = { chosen = it }, onPin = ::pin, onRemove = ::remove)
+  }
+  chosen?.let { n ->
+    DropdownMenu(expanded = true, onDismissRequest = { chosen = null }, containerColor = palette.card) {
+      if (!trash) DropdownMenuItem(
+        text = { Text(if (n.pinned) "取消置顶" else "置顶") },
+        onClick = { chosen = null; pin(n) },
+      )
+      DropdownMenuItem(text = { Text("删除", color = palette.delete) }, onClick = { chosen = null; remove(n) })
+    }
+  }
+}
+
+/** 备忘录卡片：一行标题，下面时间加摘要。画廊视图里是一张竖卡。 */
+private fun noteSnippet(n: NItem) = if (n.locked) "已锁定" else n.snippet?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: "没有更多文字"
+
+@Composable
+private fun NoteList(
+  notes: List<NItem>,
+  grouped: Boolean,
+  palette: IosPalette,
+  pinnable: Boolean = true,
+  onOpen: (NItem) -> Unit,
+  onChoose: (NItem) -> Unit,
+  onPin: (NItem) -> Unit,
+  onRemove: (NItem) -> Unit,
+) {
   val today = LocalDate.now()
   val sections = if (grouped) notes.groupBy { bucket(it, today) }.toList() else listOf("" to notes)
   LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
-    if (notes.isEmpty()) item {
-      Text("No notes", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp, vertical = 24.dp))
-    }
     for ((name, list) in sections) {
-      if (name.isNotEmpty()) item(key = "h-$name") { SectionLabel(name) }
+      if (name.isNotEmpty()) item(key = "h-$name") {
+        Text(
+          name, style = MaterialTheme.typography.titleSmall, color = palette.secondary,
+          modifier = Modifier.padding(start = 8.dp, top = 16.dp, bottom = 6.dp),
+        )
+      }
       groupItems(list, key = { "n-${it.guid}" }, inset = 16) { n ->
-          Column(Modifier.fillMaxWidth().clickable { open(n) }.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Text(n.title.ifBlank { "New Note" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Row {
-              Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
-              Spacer(Modifier.width(8.dp))
-              Text(
-                if (n.locked) "Locked" else n.snippet?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: "No additional text",
-                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
-              )
-            }
-          }
+        SwipeRow(n, palette, pinnable, onOpen = onOpen, onChoose = onChoose, onPin = onPin, onRemove = onRemove)
+      }
+    }
+  }
+}
+
+/** 一行备忘录，左右滑动是 iOS 的两个操作：右滑置顶（黄），左滑删除（红）。 */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun SwipeRow(
+  n: NItem,
+  palette: IosPalette,
+  pinnable: Boolean = true,
+  onOpen: (NItem) -> Unit,
+  onChoose: (NItem) -> Unit,
+  onPin: (NItem) -> Unit,
+  onRemove: (NItem) -> Unit,
+) {
+  val state = rememberSwipeToDismissBoxState(
+    confirmValueChange = { v ->
+      when (v) {
+        SwipeToDismissBoxValue.StartToEnd -> { if (pinnable) onPin(n); false }
+        SwipeToDismissBoxValue.EndToStart -> { onRemove(n); true }
+        else -> false
+      }
+    },
+  )
+  SwipeToDismissBox(
+    state = state,
+    enableDismissFromStartToEnd = pinnable,
+    enableDismissFromEndToStart = true,
+    backgroundContent = {
+      val (icon, colour, atStart) = when (state.dismissDirection) {
+        SwipeToDismissBoxValue.StartToEnd -> Triple(R.drawable.ic_pin, palette.accent, true)
+        else -> Triple(R.drawable.ic_trash, palette.delete, false)
+      }
+      Box(
+        Modifier.fillMaxSize().background(colour).padding(horizontal = 20.dp),
+        contentAlignment = if (atStart) Alignment.CenterStart else Alignment.CenterEnd,
+      ) { Icon(painterResource(icon), contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp)) }
+    },
+  ) {
+    var menu by remember { mutableStateOf(false) }
+    Box {
+      Column(
+        Modifier.fillMaxWidth().combinedClickable(onClick = { onOpen(n) }, onLongClick = { menu = true })
+          .padding(horizontal = 14.dp, vertical = 10.dp),
+      ) {
+        Text(n.title.ifBlank { "新备忘录" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(Modifier.padding(top = 2.dp)) {
+          Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodyMedium, color = palette.secondary)
+          Spacer(Modifier.width(8.dp))
+          Text(noteSnippet(n), style = MaterialTheme.typography.bodyMedium, color = palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+      }
+      DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
+        DropdownMenuItem(text = { Text(if (n.pinned) "取消置顶" else "置顶") }, onClick = { menu = false; onPin(n) })
+        DropdownMenuItem(text = { Text("删除", color = palette.delete) }, onClick = { menu = false; onRemove(n) })
+      }
+    }
+  }
+}
+
+/** 画廊：两列卡片，置顶的在最前。长按弹出菜单。 */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun Gallery(
+  notes: List<NItem>,
+  palette: IosPalette,
+  onOpen: (NItem) -> Unit,
+  onChoose: (NItem) -> Unit,
+) {
+  LazyVerticalGrid(
+    columns = GridCells.Fixed(2),
+    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+    verticalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    gridItems(notes, key = { it.guid }) { n ->
+      Surface(
+        color = palette.card, shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { onOpen(n) }, onLongClick = { onChoose(n) }),
+      ) {
+        Column(Modifier.padding(12.dp)) {
+          Text(n.title.ifBlank { "新备忘录" }, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          Spacer(Modifier.size(6.dp))
+          Text(noteSnippet(n), style = MaterialTheme.typography.bodySmall, color = palette.secondary, maxLines = 4, overflow = TextOverflow.Ellipsis)
+          Spacer(Modifier.size(8.dp))
+          Text(changed(n.modifiedAt), style = MaterialTheme.typography.bodySmall, color = palette.secondary)
+        }
       }
     }
   }
@@ -373,13 +657,19 @@ private fun emphasisColour(e: UInt?): Color? = when (e?.toInt()) {
 }
 
 /**
- * A note open. Read: drawn with its formatting, checklist items tickable. Edit (tap the text):
- * plain text, saved as typed; the engine carries every heading, list, link and attachment over
- * to the new text, so nothing the phone doesn't draw is lost. Locked notes are not opened.
+ * 一篇备忘录打开的样子，复刻 iOS：顶栏是返回加所在文件夹，右侧编辑时是“完成”、否则是“更多”；
+ * 日期居中；正文可读可点进去写。最近删除里只有恢复和立即删除。
  */
 @Composable
-private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: String?, folders: List<NFolder>, onBack: () -> Unit, onProblem: (String) -> Unit) {
-  var moving by remember { mutableStateOf(false) }
+private fun NoteEditor(
+  engine: AccountInterface,
+  opened: String?,
+  folderGuid: String?,
+  folders: List<NFolder>,
+  onBack: () -> Unit,
+  onProblem: (String) -> Unit,
+) {
+  val palette = iosPalette()
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var guid by remember { mutableStateOf(opened) }
@@ -387,8 +677,11 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
   var editing by remember { mutableStateOf(opened == null) }
   var text by remember { mutableStateOf("") }
   var saved by remember { mutableStateOf("") }
+  var moving by remember { mutableStateOf(false) }
+  var menu by remember { mutableStateOf(false) }
+  val folderTitle = folders.firstOrNull { it.guid == folderGuid }?.title ?: "备忘录"
 
-  fun reason(t: Throwable) = (t as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "This note couldn't be saved."
+  fun reason(t: Throwable) = (t as? uniffi.quince_mobile.EngineException.Failed)?.reason ?: "这篇备忘录没有保存下来。"
   fun load() = scope.launch {
     val g = guid ?: return@launch
     runCatching { withContext(Dispatchers.IO) { engine.note(g) } }
@@ -407,6 +700,10 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
     }
     then()
   }
+  fun act(write: () -> Unit, after: () -> Unit = {}) = scope.launch {
+    runCatching { withContext(Dispatchers.IO) { write() } }.onFailure { onProblem(reason(it)) }
+    syncNotes(context); after()
+  }
 
   LaunchedEffect(guid) { load() }
   // Typing is saved a moment after it stops, as Notes saves: never lost, never a save per key.
@@ -417,53 +714,51 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
 
   // A new note has no document yet: it is an empty one being typed.
   val d = doc ?: NDoc(guid ?: "", folderGuid, "", text, emptyList(), pinned = false, locked = false, editable = true, modifiedAt = null).takeIf { guid == null } ?: return
-  Column(Modifier.fillMaxSize()) {
-    // The desktop's note toolbar as phone actions: back; pin, delete (recover in Recently
-    // Deleted); Done while typing. Each a mark in Notes' colour, named for TalkBack.
-    val accent = MaterialTheme.colorScheme.primary
-    Row(Modifier.padding(start = 4.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-      IconButton(onClick = { save { onBack() } }) { Icon(painterResource(R.drawable.ic_back), contentDescription = "Back", tint = accent) }
-      Spacer(Modifier.weight(1f))
-      val g = guid
-      // In Recently Deleted a note is recovered or deleted for good, as in Notes; not pinned or edited.
-      val trashed = d.folderGuid == TRASH
-      if (!d.locked && g != null) {
-        if (trashed) {
-          TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { runCatching { engine.noteMove(g, null) } }; syncNotes(context); onBack() } }) {
-            Text("Recover")
-          }
-        } else {
-          IconButton(onClick = { scope.launch { withContext(Dispatchers.IO) { runCatching { engine.notePin(g, !d.pinned) } }; syncNotes(context); load() } }) {
-            Icon(painterResource(R.drawable.ic_pin), contentDescription = if (d.pinned) "Unpin" else "Pin", tint = if (d.pinned) accent else MaterialTheme.colorScheme.onSurfaceVariant)
-          }
-          IconButton(onClick = { moving = true }) {
-            Icon(painterResource(R.drawable.ic_folder), contentDescription = "Move to Folder", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-          }
+  val trashed = d.folderGuid == TRASH
+
+  IosBar {
+    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+      IconButton(onClick = { save { onBack() } }) {
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "返回", tint = palette.accent)
+      }
+      Text(folderTitle, style = MaterialTheme.typography.bodyLarge, color = palette.accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+    if (!d.locked && editing) {
+      TextButton(onClick = { save { editing = false; load() } }) { Text("完成", color = palette.accent) }
+    } else if (!d.locked) {
+      Box {
+        IconButton(onClick = { menu = true }) {
+          Icon(painterResource(R.drawable.ic_more), contentDescription = "更多", tint = palette.accent)
         }
-        if (trashed) {
-          TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { runCatching { engine.noteDelete(g) } }; syncNotes(context); onBack() } }) {
-            Text("Delete Now", color = MaterialTheme.colorScheme.error)
-          }
-        } else {
-          IconButton(onClick = { scope.launch { withContext(Dispatchers.IO) { runCatching { engine.noteDelete(g) } }; syncNotes(context); onBack() } }) {
-            Icon(painterResource(R.drawable.ic_trash), contentDescription = "Delete", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = palette.card) {
+          if (trashed) {
+            DropdownMenuItem(text = { Text("恢复") }, onClick = { menu = false; act({ engine.noteMove(guid!!, null) }, onBack) })
+            DropdownMenuItem(text = { Text("立即删除", color = palette.delete) }, onClick = { menu = false; act({ engine.noteDelete(guid!!) }, onBack) })
+          } else {
+            DropdownMenuItem(
+              text = { Text(if (d.pinned) "取消置顶" else "置顶") },
+              onClick = { menu = false; act({ engine.notePin(guid!!, !d.pinned) }) { load() } },
+            )
+            DropdownMenuItem(text = { Text("移动到…") }, onClick = { menu = false; moving = true })
+            DropdownMenuItem(text = { Text("删除", color = palette.delete) }, onClick = { menu = false; act({ engine.noteDelete(guid!!) }, onBack) })
           }
         }
       }
-      if (!d.locked && editing) TextButton(onClick = { save { editing = false; load() } }) { Text("Done") }
     }
-    // When it last changed, small and centred above the note, as the desktop shows it.
+  }
+  Column(Modifier.fillMaxSize().imePadding()) {
+    // When it last changed, small and centred under the bar, as iOS shows it.
     d.modifiedAt?.let { at ->
       Text(
-        Instant.ofEpochSecond(at).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.LONG, FormatStyle.SHORT)),
-        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Instant.ofEpochSecond(at).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)),
+        style = MaterialTheme.typography.bodySmall, color = palette.secondary,
         modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp), textAlign = TextAlign.Center,
       )
     }
     when {
       d.locked -> Text(
-        "This note is locked. Open it on an Apple device with its password.",
-        style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(24.dp),
+        "此备忘录已锁定。请在 iPhone、iPad 或 Mac 上用它的密码打开。",
+        style = MaterialTheme.typography.bodyLarge, color = palette.secondary, modifier = Modifier.padding(24.dp),
       )
       editing -> {
         // The keyboard comes up with the editor, as Notes opens a new or tapped note ready to type.
@@ -473,21 +768,18 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
           text, { text = it },
           // An attachment shows as 📎, not the font's dotted "OBJ" box (discussion #199).
           visualTransformation = AttachmentMarks,
-          textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-          cursorBrush = SolidColor(NotesYellow),
-          modifier = Modifier.fillMaxSize().imePadding().padding(horizontal = 24.dp, vertical = 8.dp).focusRequester(focus),
+          textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface, lineHeight = 24.sp),
+          cursorBrush = SolidColor(palette.accent),
+          modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 8.dp).focusRequester(focus),
         )
       }
       else -> RichNote(
         d,
         engine,
-        Modifier.fillMaxSize().clickable(enabled = d.editable && d.folderGuid != TRASH) { text = d.text; saved = d.text; editing = true },
+        Modifier.fillMaxSize().clickable(enabled = d.editable && !trashed) { text = d.text; saved = d.text; editing = true },
       ) { at, checked ->
         val g = guid ?: return@RichNote
-        scope.launch {
-          runCatching { withContext(Dispatchers.IO) { engine.noteCheck(g, at, checked) } }.onFailure { onProblem(reason(it)) }
-          syncNotes(context); load()
-        }
+        act({ engine.noteCheck(g, at, checked) }) { load() }
       }
     }
   }
@@ -495,31 +787,29 @@ private fun NoteScreen(engine: AccountInterface, opened: String?, folderGuid: St
     val g = guid
     AlertDialog(
       onDismissRequest = { moving = false },
-      title = { Text("Move to Folder") },
+      containerColor = palette.card,
+      title = { Text("移动备忘录") },
       text = {
-        Column {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
           // Notes' own folder (no folder) first, then the person's; Recently Deleted is not a place to move to.
-          val choices = listOf<Pair<String?, String>>(null to "Notes") + folders.filter { !it.trash }.map { it.guid to it.title }
+          val choices = listOf<Pair<String?, String>>(null to "备忘录") + folders.filter { !it.trash }.map { it.guid to it.title }
           for ((to, title) in choices) {
             Row(
               Modifier.fillMaxWidth().clickable {
                 moving = false
-                if (g != null && to != d.folderGuid) scope.launch {
-                  runCatching { withContext(Dispatchers.IO) { engine.noteMove(g, to) } }.onFailure { onProblem(reason(it)) }
-                  syncNotes(context); load()
-                }
+                if (g != null && to != d.folderGuid) act({ engine.noteMove(g, to) }) { load() }
               }.padding(vertical = 12.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
-              Icon(painterResource(R.drawable.ic_folder), contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+              Icon(painterResource(R.drawable.ic_folder), contentDescription = null, tint = palette.accent, modifier = Modifier.size(20.dp))
               Spacer(Modifier.width(14.dp))
               Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-              if (to == d.folderGuid) Icon(painterResource(R.drawable.ic_check), contentDescription = "Here now", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+              if (to == d.folderGuid) Icon(painterResource(R.drawable.ic_check), contentDescription = "在这里", tint = palette.accent, modifier = Modifier.size(18.dp))
             }
           }
         }
       },
-      confirmButton = { TextButton(onClick = { moving = false }) { Text("Cancel") } },
+      confirmButton = { TextButton(onClick = { moving = false }) { Text("取消", color = palette.accent) } },
     )
   }
 }
@@ -558,13 +848,14 @@ private fun lay(d: NDoc): List<NoteLine> {
 @Composable
 private fun RichNote(d: NDoc, engine: AccountInterface, modifier: Modifier, onCheck: (UInt, Boolean) -> Unit) {
   val lines = remember(d) { lay(d) }
-  LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+  LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
     items(lines.size) { i -> NoteLineView(lines[i], engine, onCheck) }
   }
 }
 
 @Composable
 private fun NoteLineView(l: NoteLine, engine: AccountInterface, onCheck: (UInt, Boolean) -> Unit) {
+  val palette = iosPalette()
   val para = l.para
   // The attachments on this line, in order: each U+FFFC is one, named by the span over it.
   val attachments = remember(l) {
@@ -580,7 +871,6 @@ private fun NoteLineView(l: NoteLine, engine: AccountInterface, onCheck: (UInt, 
     4 -> MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
     else -> MaterialTheme.typography.bodyLarge
   }
-  val link = MaterialTheme.colorScheme.primary
   val styled = buildAnnotatedString {
     // Each attachment's character kept as one that draws nothing, so every style after it stays
     // on its own words; the attachment itself is drawn below the line's words.
@@ -600,7 +890,7 @@ private fun NoteLineView(l: NoteLine, engine: AccountInterface, onCheck: (UInt, 
             s.strike -> TextDecoration.LineThrough
             else -> null
           },
-          color = emphasisColour(s.emphasis) ?: if (s.link != null) link else Color.Unspecified,
+          color = emphasisColour(s.emphasis) ?: if (s.link != null) palette.accent else Color.Unspecified,
         ),
         from, to,
       )
@@ -612,20 +902,19 @@ private fun NoteLineView(l: NoteLine, engine: AccountInterface, onCheck: (UInt, 
       103 -> {
         // Notes' checklist circle: hollow, or filled yellow with a check.
         val ticked = para.checked == true
-        val accent = MaterialTheme.colorScheme.primaryContainer
         Box(
           Modifier.padding(top = 3.dp, end = 10.dp).size(20.dp)
-            .border(1.75.dp, if (ticked) accent else MaterialTheme.colorScheme.outline, androidx.compose.foundation.shape.CircleShape)
-            .background(if (ticked) accent else Color.Transparent, androidx.compose.foundation.shape.CircleShape)
+            .border(1.75.dp, if (ticked) palette.accent else palette.secondary, androidx.compose.foundation.shape.CircleShape)
+            .background(if (ticked) palette.accent else Color.Transparent, androidx.compose.foundation.shape.CircleShape)
             .toggleable(ticked, role = Role.Checkbox) { onCheck(l.start.toUInt(), it) },
           contentAlignment = Alignment.Center,
-        ) { if (ticked) Icon(painterResource(R.drawable.ic_check), contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(13.dp)) }
+        ) { if (ticked) Icon(painterResource(R.drawable.ic_check), contentDescription = null, tint = Color.White, modifier = Modifier.size(13.dp)) }
       }
       100 -> Text("•  ", style = style)
       101 -> Text("–  ", style = style)
       102 -> Text("${l.number}.  ", style = style)
     }
-    if (para?.quote == true) Box(Modifier.padding(end = 10.dp).size(3.dp, 22.dp).background(MaterialTheme.colorScheme.outline))
+    if (para?.quote == true) Box(Modifier.padding(end = 10.dp).size(3.dp, 22.dp).background(palette.separator))
     // A line that is only its attachments shows them alone, without an empty line of text.
     if (attachments.isEmpty() || l.text.any { it != '\uFFFC' && !it.isWhitespace() }) {
       Text(styled, style = style.copy(lineHeight = (style.fontSize.value * 1.35f).sp))
@@ -666,7 +955,7 @@ private fun NoteAttachmentView(id: String, engine: AccountInterface) {
           }.getOrNull()
         }
       }
-      .onFailure { problem = "This attachment couldn't be read from iCloud." }
+      .onFailure { problem = "此附件无法从 iCloud 读取。" }
   }
   fun open(a: NAttachment) = scope.launch {
     runCatching {
@@ -685,9 +974,9 @@ private fun NoteAttachmentView(id: String, engine: AccountInterface) {
       try {
         context.startActivity(android.content.Intent.createChooser(view, a.name).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
       } catch (_: android.content.ActivityNotFoundException) {
-        problem = "No app on this phone opens ${a.name.substringAfterLast('.', "this kind of")} files."
+        problem = "此手机上没有应用可以打开 ${a.name.substringAfterLast('.', "这类")} 文件。"
       }
-    }.onFailure { problem = "This attachment couldn't be downloaded from iCloud." }
+    }.onFailure { problem = "此附件无法从 iCloud 下载。" }
   }
   val a = info
   val shape = RoundedCornerShape(12.dp)
@@ -695,7 +984,7 @@ private fun NoteAttachmentView(id: String, engine: AccountInterface) {
     when {
       a == null && problem == null -> Box(Modifier.fillMaxWidth().size(height = 56.dp, width = 0.dp).background(MaterialTheme.colorScheme.surfaceVariant, shape))
       a == null -> {}
-      a.kind == "inline" -> Text(a.title ?: "", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.primary)
+      a.kind == "inline" -> Text(a.title ?: "", style = MaterialTheme.typography.bodyLarge, color = iosPalette().accent)
       (a.kind == "image" || a.kind == "drawing") && picture != null -> {
         val p = picture!!
         androidx.compose.foundation.Image(
@@ -717,20 +1006,20 @@ private fun NoteAttachmentView(id: String, engine: AccountInterface) {
           contentScale = androidx.compose.ui.layout.ContentScale.Crop,
         ) else Icon(
           painterResource(attachmentIcon(a)), contentDescription = null,
-          tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp),
+          tint = iosPalette().accent, modifier = Modifier.size(28.dp),
         )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-          Text(if (a.kind == "table") "Table" else a.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+          Text(if (a.kind == "table") "表格" else a.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
           val under = when {
-            a.kind == "table" -> "Opens in Notes on an iPhone, iPad or Mac"
+            a.kind == "table" -> "在 iPhone、iPad 或 Mac 上的备忘录里打开"
             else -> a.size?.let { android.text.format.Formatter.formatShortFileSize(context, it) }
           }
-          if (under != null) Text(under, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          if (under != null) Text(under, style = MaterialTheme.typography.bodySmall, color = iosPalette().secondary)
         }
       }
     }
-    problem?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 4.dp)) }
+    problem?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = iosPalette().delete, modifier = Modifier.padding(top = 4.dp)) }
   }
 }
 

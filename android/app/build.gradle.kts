@@ -12,7 +12,8 @@ android {
   // (kept for the bindings) out of the app.
   ndkVersion = "30.0.16248370"
   defaultConfig {
-    applicationId = "io.github.yashwanthkamireddi.skykeep"
+    // notes-ios fork: its own id, so it installs beside the upstream Skykeep app.
+    applicationId = "io.github.yashwanthkamireddi.skykeep.notes"
     minSdk = 29
     targetSdk = 36
     // One version for every Skykeep: the desktop's (src-tauri/tauri.conf.json), so a release tag
@@ -46,7 +47,7 @@ android {
     create("verify") {
       initWith(getByName("release"))
       applicationIdSuffix = ".verify"
-      val id = "io.github.yashwanthkamireddi.skykeep.verify"
+      val id = "io.github.yashwanthkamireddi.skykeep.notes.verify"
       resValue("string", "account_type", "$id.account")
       for (s in listOf("reminders", "notes", "photos")) resValue("string", "authority_$s", "$id.$s")
       signingConfig = signingConfigs.getByName("debug")

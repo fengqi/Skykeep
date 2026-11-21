@@ -19,7 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.github.yashwanthkamireddi.skykeep.sync.SessionEnded
-import io.github.yashwanthkamireddi.skykeep.ui.MainScreens
+import io.github.yashwanthkamireddi.skykeep.ui.NotesScreens
 import io.github.yashwanthkamireddi.skykeep.ui.Setup
 import io.github.yashwanthkamireddi.skykeep.ui.Welcome
 import io.github.yashwanthkamireddi.skykeep.ui.allowed
@@ -111,10 +111,8 @@ class MainActivity : ComponentActivity() {
               WidgetUpdates.scheduleAll(applicationContext)
               stage = Stage.Main
             }
-            Stage.Main -> MainScreens(
+            Stage.Main -> NotesScreens(
               engine = engine!!,
-              widgetLaunch = widgetLaunch,
-              onWidgetLaunchConsumed = { widgetLaunch = null },
               onSignedOut = { stage = Stage.SignIn },
             )
           }
