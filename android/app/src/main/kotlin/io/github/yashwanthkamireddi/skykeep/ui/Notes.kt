@@ -556,7 +556,8 @@ private fun FolderScreen(
     }
   }
   // 大标题与搜索框随内容滚动：搜索框触顶后停在顶栏下（sticky），如 iOS。
-  LazyColumn(state = listState, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+  Box(Modifier.fillMaxSize()) {
+  LazyColumn(state = listState, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 120.dp)) {
     item(key = "title") {
       Text("文件夹", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 4.dp))
     }
@@ -637,6 +638,9 @@ private fun FolderScreen(
         }
       }
     }
+  }
+    // 左下角悬浮的新建文件夹，如 iOS；这样建的只是普通自建文件夹。
+    Fab(onNewFolder, palette, Modifier.align(Alignment.BottomStart), icon = R.drawable.ic_folder_plus, label = "新建文件夹")
   }
 }
 
@@ -947,16 +951,22 @@ private fun NoteListScreen(
   }
 }
 
-/** 右下角悬浮的新建按钮：白底圆形、主题色铅笔，如 iOS 的列表页。 */
+/** 悬浮圆钮：白底、主题色图标。列表页右下角新建备忘录，文件夹页左下角新建文件夹。 */
 @Composable
-private fun Fab(onNew: () -> Unit, palette: IosPalette, modifier: Modifier = Modifier) {
+private fun Fab(
+  onClick: () -> Unit,
+  palette: IosPalette,
+  modifier: Modifier = Modifier,
+  icon: Int = R.drawable.ic_edit,
+  label: String = "新备忘录",
+) {
   Surface(
-    onClick = onNew,
+    onClick = onClick,
     color = palette.card, shape = CircleShape, shadowElevation = 8.dp,
     modifier = modifier.padding(20.dp).size(56.dp),
   ) {
     Box(contentAlignment = Alignment.Center) {
-      Icon(painterResource(R.drawable.ic_edit), contentDescription = "新备忘录", tint = palette.accent, modifier = Modifier.size(24.dp))
+      Icon(painterResource(icon), contentDescription = label, tint = palette.accent, modifier = Modifier.size(24.dp))
     }
   }
 }

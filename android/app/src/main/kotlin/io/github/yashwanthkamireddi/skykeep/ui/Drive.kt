@@ -333,8 +333,8 @@ internal fun NameDialog(title: String, initial: String, onDismiss: () -> Unit, o
   AlertDialog(
     onDismissRequest = close,
     title = { Text(title) },
-    text = { OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Name") }, isError = name.isNotEmpty() && !ok) },
-    confirmButton = { TextButton(onClick = { keyboard?.hide(); onDone(clean) }, enabled = ok) { Text("Done") } },
-    dismissButton = { TextButton(onClick = close) { Text("Cancel") } },
+    text = { OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("名称") }, isError = name.isNotEmpty() && !ok) },
+    confirmButton = { TextButton(onClick = { keyboard?.hide(); onDone(clean) }, enabled = ok) { Text("完成") } },
+    dismissButton = { TextButton(onClick = close) { Text("取消") } },
   )
 }
