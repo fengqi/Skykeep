@@ -383,21 +383,28 @@ private fun saveFolderOrder(context: android.content.Context, order: List<String
 /** 一个文件夹在文件夹页的一行。 */
 private data class FolderRow(val title: String, val count: Int, val icon: Int, val place: NPlace.Folder, val fixed: Boolean = false)
 
-/** 文件夹页的行序：快速备忘录置顶，“所有 iCloud”其次，“备忘录”再次，自建的按本机保存的顺序，最近删除固定底。 */
-private fun folderRows(folders: List<NFolder>, order: List<String>): List<FolderRow> {
+/** 文件夹页的分两组：快速备忘录自己一张卡（iOS 置顶的独立区块），其余一张卡。 */
+private class FolderSections(val quick: List<FolderRow>, val main: List<FolderRow>)
+
+private fun folderSections(folders: List<NFolder>, order: List<String>): FolderSections {
   val all = folders.filter { !it.trash }.sumOf { it.count.toInt() }
   val quick = folders.filter { it.guid != DEFAULT_FOLDER && it.title == QUICK_FOLDER_TITLE && !it.trash }
   val system = folders.filter { it.guid == DEFAULT_FOLDER && !it.trash }
   val user = folders.filter { it.guid != DEFAULT_FOLDER && it.title != QUICK_FOLDER_TITLE && !it.trash }
   val ordered = order.mapNotNull { g -> user.firstOrNull { it.guid == g } } + user.filterNot { f -> order.contains(f.guid) }
-  return buildList {
-    quick.forEach { add(FolderRow(folderDisplay(it), it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, folderDisplay(it)), fixed = true)) }
+  val quickRows = quick.map { FolderRow(folderDisplay(it), it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, folderDisplay(it)), fixed = true) }
+  val main = buildList {
     add(FolderRow("所有 iCloud", all, R.drawable.ic_folder, NPlace.Folder(null, "所有 iCloud"), fixed = true))
     system.forEach { add(FolderRow(folderDisplay(it), it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, folderDisplay(it)), fixed = true)) }
     ordered.forEach { add(FolderRow(folderDisplay(it), it.count.toInt(), R.drawable.ic_folder, NPlace.Folder(it.guid, folderDisplay(it)))) }
     folders.firstOrNull { it.trash }?.let { add(FolderRow("最近删除", it.count.toInt(), R.drawable.ic_trash, NPlace.Folder(it.guid, "最近删除"), fixed = true)) }
   }
+  return FolderSections(quickRows, main)
 }
+
+/** 编辑模式把两组合成一列（固定的行置灰）。 */
+private fun folderRows(folders: List<NFolder>, order: List<String>): List<FolderRow> =
+  folderSections(folders, order).let { it.quick + it.main }
 
 /** 文件夹页一行（普通或编辑模式共用）。置灰的是固定行（编辑模式不能动）；grip 是编辑模式的排序把手。 */
 @Composable
@@ -551,12 +558,22 @@ private fun FolderScreen(
       Text("文件夹", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 4.dp))
     }
     stickyHeader(key = "search") {
-      Box(Modifier.background(palette.bg).padding(top = 8.dp, bottom = 4.dp)) {
+      Box(Modifier.background(palette.bg).padding(top = 8.dp, bottom = 12.dp)) {
         IosSearch(query, onQuery, palette, Modifier.fillMaxWidth(), onActivated = onSearchStart)
       }
     }
-    val rows = folderRows(folders, savedFolderOrder(context))
-    groupItems(rows, key = { it.title }, inset = 54) { r ->
+    // 快速备忘录是 iOS 置顶的独立区块：自己一张卡，与 iCloud 的文件夹之间留出间隔。
+    val sections = folderSections(folders, savedFolderOrder(context))
+    if (sections.quick.isNotEmpty()) {
+      groupItems(sections.quick, key = { it.title }, inset = 54) { r ->
+        FolderRowView(r, palette) { onOpen(r.place) }
+      }
+      item(key = "icloud-label") {
+        Text("iCloud", style = MaterialTheme.typography.titleSmall, color = palette.secondary,
+          modifier = Modifier.padding(start = 8.dp, top = 20.dp, bottom = 6.dp))
+      }
+    }
+    groupItems(sections.main, key = { it.title }, inset = 54) { r ->
       val folder = folders.firstOrNull { it.guid == r.place.guid }
       if (r.fixed || folder == null) {
         FolderRowView(r, palette) { onOpen(r.place) }
@@ -851,7 +868,7 @@ private fun NoteListScreen(
           },
           style = MaterialTheme.typography.bodyMedium, color = palette.secondary,
         )
-        IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp, bottom = 4.dp), onActivated = onSearchStart)
+        IosSearch(query, onQuery, palette, Modifier.padding(top = 8.dp, bottom = 12.dp), onActivated = onSearchStart)
       }
       Box(Modifier.fillMaxSize()) {
         if (notes.isEmpty()) {
@@ -882,7 +899,7 @@ private fun NoteListScreen(
           }
         }
         stickyHeader(key = "search") {
-          Box(Modifier.background(palette.bg).padding(top = 8.dp, bottom = 4.dp)) {
+          Box(Modifier.background(palette.bg).padding(top = 8.dp, bottom = 12.dp)) {
             IosSearch(query, onQuery, palette, Modifier.fillMaxWidth(), onActivated = onSearchStart)
           }
         }
