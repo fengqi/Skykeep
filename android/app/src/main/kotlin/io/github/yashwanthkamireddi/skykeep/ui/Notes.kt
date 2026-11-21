@@ -898,7 +898,7 @@ private fun NoteListScreen(
         ).padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent, modifier = Modifier.size(30.dp).graphicsLayer { translationX = 9.dp.toPx(); translationY = 3.dp.toPx() })
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "文件夹", tint = palette.accent, modifier = Modifier.size(30.dp).graphicsLayer { translationX = 9.dp.toPx(); translationY = 2.dp.toPx() })
         Text("文件夹", style = MaterialTheme.typography.bodyLarge, color = palette.accent, modifier = Modifier.padding(start = 2.dp))
       }
       // 收起后文件夹名淡入顶栏中间，如 iOS。
@@ -1152,7 +1152,7 @@ private fun NoteRow(
           folderName?.let {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
               // 中文字形沉在行框下部，小图标按中心对齐会显得偏上，往下挪一点贴住字。
-              Icon(painterResource(R.drawable.ic_folder), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(13.dp).graphicsLayer { translationY = 3.dp.toPx() })
+              Icon(painterResource(R.drawable.ic_folder), contentDescription = null, tint = palette.secondary, modifier = Modifier.size(13.dp).graphicsLayer { translationY = 2.dp.toPx() })
               Spacer(Modifier.width(5.dp))
               Text(it, style = MaterialTheme.typography.bodyMedium, color = palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -1279,7 +1279,7 @@ private fun NoteEditor(
         ) { save { onBack() } }.padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Icon(painterResource(R.drawable.ic_back), contentDescription = "返回", tint = palette.accent, modifier = Modifier.size(30.dp).graphicsLayer { translationX = 9.dp.toPx(); translationY = 3.dp.toPx() })
+        Icon(painterResource(R.drawable.ic_back), contentDescription = "返回", tint = palette.accent, modifier = Modifier.size(30.dp).graphicsLayer { translationX = 9.dp.toPx(); translationY = 2.dp.toPx() })
         Text(folderTitle, style = MaterialTheme.typography.bodyLarge, color = palette.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 2.dp))
       }
     }
