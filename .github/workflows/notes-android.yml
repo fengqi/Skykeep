@@ -52,7 +52,7 @@ jobs:
           ( umask 077; printf '%s' "$KEYSTORE" | base64 -d > "$key" )
           [ -s "$key" ] || { echo "::error::ANDROID_KEYSTORE is empty"; exit 1; }
           mkdir -p notes
-          out="notes/备忘录-${GITHUB_REF_NAME}-android.apk"
+          out="notes/Skykeep-notes-${GITHUB_REF_NAME}-android.apk"
           cp android/app/build/outputs/apk/release/app-release-unsigned.apk "$out"
           "$tools/apksigner" sign --ks "$key" --ks-key-alias "$ALIAS" --ks-pass pass:"$KS_PW" --key-pass pass:"$KS_PW" "$out"
           "$tools/apksigner" verify "$out" && echo "signed and verified: $out"
@@ -68,5 +68,5 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" notes/*.apk \
             --title "备忘录 $GITHUB_REF_NAME" \
-            --notes "自动构建于 $(date -u '+%Y-%m-%d %H:%M UTC')，提交 $GITHUB_SHA。覆盖安装：签名与手机上现有版本一致。" \
+            --notes "自动构建于 $(date -u '+%Y-%m-%d %H:%M UTC')，提交 $GITHUB_SHA。\
             --latest
