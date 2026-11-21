@@ -9,6 +9,7 @@
     android:shortcutLongLabel="@string/shortcut_new_note_long">
     <intent
       android:action="io.github.yashwanthkamireddi.skykeep.notes.NEW_NOTE"
+      android:targetPackage="io.github.yashwanthkamireddi.skykeep.notes"
       android:targetClass="io.github.yashwanthkamireddi.skykeep.MainActivity" />
   </shortcut>
 </shortcuts>
